@@ -71,7 +71,7 @@ The server reads these environment variables at startup:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `YOUTUBE_API_KEY` | Required | YouTube Data API v3 key. |
+| `YOUTUBE_API_KEY` | Optional | YouTube Data API v3 key for `get_video_details` and `search_videos`. |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | Public server URL without `/mcp`. |
 | `AUTH_MODE` | `cloudflare` | Use `cloudflare` in production or `disabled` on loopback for local work. |
 | `CF_ACCESS_TEAM_DOMAIN` | Required in production | Cloudflare Access team domain. |

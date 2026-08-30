@@ -137,6 +137,12 @@ def test_search_videos_returns_results_and_passes_parameters(mocker):
     )
 
 
+@pytest.mark.parametrize("method", ["get_video", "search_videos"])
+def test_data_api_methods_require_api_key(method):
+    with pytest.raises(ValueError, match="Set YOUTUBE_API_KEY"):
+        getattr(YouTubeAPI(""), method)("test")
+
+
 def test_search_skips_non_video_items(mocker):
     response = {"items": [{"id": {"playlistId": "PL123"}, "snippet": {}}]}
     mock_build = mocker.patch("youtube_mcp.api.build")

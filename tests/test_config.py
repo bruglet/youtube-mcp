@@ -13,7 +13,7 @@ def test_cloudflare_mode_requires_access_settings(monkeypatch):
 
 
 def test_disabled_mode_supports_local_development(monkeypatch, tmp_path):
-    monkeypatch.setenv("YOUTUBE_API_KEY", "key")
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     monkeypatch.setenv("AUTH_MODE", "disabled")
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("MODEL_CACHE_DIR", str(tmp_path / "models"))
@@ -22,6 +22,7 @@ def test_disabled_mode_supports_local_development(monkeypatch, tmp_path):
     settings = Settings.from_env()
 
     assert settings.auth_mode == "disabled"
+    assert settings.youtube_api_key == ""
     assert settings.cache_ttl_seconds == 86400
     assert settings.cache_max_bytes == 50 * 1024**3
     assert settings.artifact_max_bytes == 8 * 1024**3

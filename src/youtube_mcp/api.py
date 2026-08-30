@@ -45,11 +45,21 @@ def _execute(request):
 
 class YouTubeAPI:
     def __init__(self, api_key: str) -> None:
-        self._service = build("youtube", "v3", developerKey=api_key)
+        self._service = (
+            build("youtube", "v3", developerKey=api_key) if api_key else None
+        )
+
+    def _require_service(self):
+        if self._service is None:
+            raise ValueError(
+                "Set YOUTUBE_API_KEY to use get_video_details or search_videos."
+            )
+        return self._service
 
     def get_video(self, video_id: str) -> VideoMetadata:
+        service = self._require_service()
         response = _execute(
-            self._service.videos().list(
+            service.videos().list(
                 part="snippet,statistics,contentDetails",
                 id=video_id,
             )
@@ -96,6 +106,7 @@ class YouTubeAPI:
         language: str | None = None,
         order: str = "relevance",
     ) -> list[VideoSearchResult]:
+        service = self._require_service()
         params: dict = {
             "part": "snippet",
             "q": query,
@@ -106,7 +117,7 @@ class YouTubeAPI:
         if language:
             params["relevanceLanguage"] = language
 
-        response = _execute(self._service.search().list(**params))
+        response = _execute(service.search().list(**params))
 
         results = []
         for item in response.get("items", []):

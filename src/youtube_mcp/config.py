@@ -48,8 +48,6 @@ class Settings:
             raise RuntimeError("AUTH_MODE must be cloudflare or disabled.")
 
         api_key = os.getenv("YOUTUBE_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("YOUTUBE_API_KEY is required.")
 
         public_base_url = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
         parsed = urlparse(public_base_url)
