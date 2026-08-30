@@ -49,7 +49,7 @@ WRITE_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=True,
-    openWorldHint=False,
+    openWorldHint=True,
 )
 
 
