@@ -4,7 +4,14 @@ import re
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from .models import Thumbnail, VideoMetadata, VideoSearchResult, VideoStatistics
+from .models import (
+    ChannelSearchResult,
+    ChannelUploadsPage,
+    Thumbnail,
+    VideoMetadata,
+    VideoSearchResult,
+    VideoStatistics,
+)
 from .video import canonical_url
 
 
@@ -52,7 +59,8 @@ class YouTubeAPI:
     def _require_service(self):
         if self._service is None:
             raise ValueError(
-                "Set YOUTUBE_API_KEY to use get_video_details or search_videos."
+                "Set YOUTUBE_API_KEY to use get_video_details, search_videos, "
+                "search_channels, or get_channel_uploads."
             )
         return self._service
 
@@ -135,3 +143,105 @@ class YouTubeAPI:
                 thumbnail_url=snippet["thumbnails"]["default"]["url"],
             ))
         return results
+
+    def search_channels(
+        self,
+        query: str,
+        max_results: int = 5,
+    ) -> list[ChannelSearchResult]:
+        service = self._require_service()
+        response = _execute(
+            service.search().list(
+                part="snippet",
+                q=query,
+                type="channel",
+                maxResults=min(max(1, max_results), 50),
+            )
+        )
+
+        results = []
+        for item in response.get("items", []):
+            channel_id = item["id"].get("channelId")
+            if not channel_id:
+                continue
+            snippet = item["snippet"]
+            results.append(
+                ChannelSearchResult(
+                    channel_id=channel_id,
+                    channel_url=f"https://www.youtube.com/channel/{channel_id}",
+                    title=snippet["title"],
+                    description=snippet.get("description", ""),
+                    published_at=snippet["publishedAt"],
+                    thumbnail_url=snippet["thumbnails"]["default"]["url"],
+                )
+            )
+        return results
+
+    def get_channel_uploads(
+        self,
+        channel_id: str,
+        max_results: int = 10,
+        page_token: str | None = None,
+    ) -> ChannelUploadsPage:
+        service = self._require_service()
+        channel_response = _execute(
+            service.channels().list(
+                part="snippet,contentDetails",
+                id=channel_id,
+            )
+        )
+        channels = channel_response.get("items", [])
+        if not channels:
+            raise ValueError(f"Channel not found: {channel_id}")
+
+        channel = channels[0]
+        channel_id = channel["id"]
+        channel_title = channel["snippet"]["title"]
+        uploads_playlist_id = (
+            channel.get("contentDetails", {})
+            .get("relatedPlaylists", {})
+            .get("uploads")
+        )
+        if not uploads_playlist_id:
+            raise ValueError(f"Channel has no accessible uploads playlist: {channel_id}")
+
+        params: dict = {
+            "part": "snippet,contentDetails",
+            "playlistId": uploads_playlist_id,
+            "maxResults": min(max(1, max_results), 50),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        uploads_response = _execute(service.playlistItems().list(**params))
+
+        videos = []
+        for item in uploads_response.get("items", []):
+            snippet = item.get("snippet", {})
+            details = item.get("contentDetails", {})
+            video_id = details.get("videoId") or snippet.get("resourceId", {}).get(
+                "videoId"
+            )
+            if not video_id:
+                continue
+            videos.append(
+                VideoSearchResult(
+                    video_id=video_id,
+                    canonical_url=canonical_url(video_id),
+                    title=snippet.get("title", ""),
+                    description=snippet.get("description", ""),
+                    channel_title=channel_title,
+                    published_at=details.get("videoPublishedAt")
+                    or snippet.get("publishedAt", ""),
+                    thumbnail_url=snippet.get("thumbnails", {})
+                    .get("default", {})
+                    .get("url", ""),
+                )
+            )
+
+        return ChannelUploadsPage(
+            channel_id=channel_id,
+            channel_url=f"https://www.youtube.com/channel/{channel_id}",
+            channel_title=channel_title,
+            videos=videos,
+            next_page_token=uploads_response.get("nextPageToken"),
+        )

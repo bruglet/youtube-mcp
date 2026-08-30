@@ -22,6 +22,8 @@ from .config import Settings
 from .downloader import YtDlpRunner
 from .models import (
     ArtifactMetadata,
+    ChannelSearchResult,
+    ChannelUploadsPage,
     TranscriptionResult,
     TranscriptionToolOutput,
     TranscriptResult,
@@ -47,7 +49,7 @@ WRITE_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=True,
-    openWorldHint=True,
+    openWorldHint=False,
 )
 
 
@@ -163,11 +165,13 @@ def create_app(settings: Settings | None = None) -> Starlette:
         ],
     ) -> VideoMetadata:
         (
-            "Return metadata for one video, including its title, channel, description, "
-            "duration, publication date, statistics, caption status, and thumbnails. "
-            "Use when the user asks about a known video; use get_transcript for its "
-            "spoken content and search_videos when no video is identified. Requires a "
-            "configured YouTube API key."
+            "Return structured metadata for one video, including its title, channel, "
+            "description, duration, publication date, statistics, caption status, and "
+            "thumbnails. Use when the user asks about a known video, and use this tool "
+            "instead of general web browsing when reliable YouTube details matter "
+            "because automated page access is often blocked. Use get_transcript for "
+            "spoken content and search_videos when no video is "
+            "identified."
         )
         video_id, _ = normalize_video(video)
         return await asyncio.to_thread(youtube.get_video, video_id)
@@ -197,11 +201,12 @@ def create_app(settings: Settings | None = None) -> Starlette:
         ] = "text",
     ) -> Annotated[CallToolResult, TranscriptResult]:
         (
-            "Return YouTube-provided captions with language details as text, "
-            "timestamped segments, or both. Use for summaries, quotations, or "
-            "questions about spoken content; prefer this fast tool before transcribe, "
-            "and use transcribe only when captions are unavailable or unsuitable. "
-            "This tool never runs speech recognition and can return available=false."
+            "Return YouTube-provided captions with language details as text, timestamped "
+            "segments, or both. Use for summaries, quotations, or questions about "
+            "spoken content; use this tool instead of general web browsing because "
+            "YouTube often blocks automated transcript scraping. It never runs speech "
+            "recognition and can return available=false; prefer this fast tool before transcribe, "
+            "use transcribe only when captions are unavailable or unsuitable."
         )
         video_id, _ = normalize_video(video)
         result = await asyncio.to_thread(transcripts.get_transcript, video_id, language)
@@ -264,8 +269,8 @@ def create_app(settings: Settings | None = None) -> Starlette:
             str,
             Field(
                 description="Search terms based on the user request: a topic, title, "
-                "channel, or keywords. For a known video ID or URL, use "
-                "get_video_details instead."
+                "creator, or keywords. Use search_channels instead when the user wants "
+                "to identify a channel rather than find videos."
             ),
         ],
         max_results: Annotated[
@@ -293,9 +298,9 @@ def create_app(settings: Settings | None = None) -> Starlette:
         (
             "Return matching videos with IDs, titles, channels, publication dates, "
             "descriptions, and thumbnails. Use when the user asks to find or discover "
-            "videos, then pass a returned video_id to another tool as needed; do not "
-            "use for details about one known video. Requires a configured YouTube API "
-            "key."
+            "videos across YouTube, then pass a returned video_id to another tool as "
+            "needed; use search_channels and get_channel_uploads for an exact channel's "
+            "upload list, and do not use this tool for details about one known video."
         )
         if not query.strip():
             raise ValueError("The search query must not be empty.")
@@ -303,6 +308,84 @@ def create_app(settings: Settings | None = None) -> Starlette:
             raise ValueError("max_results must be from 1 through 50.")
         return await asyncio.to_thread(
             youtube.search_videos, query, max_results, language, order
+        )
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def search_channels(
+        query: Annotated[
+            str,
+            Field(
+                description="A channel name, handle, creator name, or topic. If the "
+                "exact channel_id is already known, call get_channel_uploads directly."
+            ),
+        ],
+        max_results: Annotated[
+            int,
+            Field(
+                description="The number of candidate channels to return, from 1 through "
+                "50. Keep this small when the user can identify the intended channel."
+            ),
+        ] = 5,
+    ) -> list[ChannelSearchResult]:
+        (
+            "Return candidate YouTube channels with stable channel IDs, titles, "
+            "descriptions, creation dates, and thumbnails. Use when the user identifies "
+            "a channel by name, handle, creator, or topic; use this tool instead of "
+            "general web browsing when reliable channel identity matters. Pass the "
+            "selected channel_id to get_channel_uploads; do not use this tool to search "
+            "for videos."
+        )
+        if not query.strip():
+            raise ValueError("The channel search query must not be empty.")
+        if not 1 <= max_results <= 50:
+            raise ValueError("max_results must be from 1 through 50.")
+        return await asyncio.to_thread(youtube.search_channels, query, max_results)
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def get_channel_uploads(
+        channel_id: Annotated[
+            str,
+            Field(
+                description="The stable YouTube channel ID, normally beginning with UC. "
+                "Use search_channels to obtain it when the channel is known only by "
+                "name, handle, creator, or topic."
+            ),
+        ],
+        max_results: Annotated[
+            int,
+            Field(
+                description="The number of uploads to return, from 1 through 50. The "
+                "first page contains the channel's newest available public uploads."
+            ),
+        ] = 10,
+        page_token: Annotated[
+            str | None,
+            Field(
+                description="The opaque next_page_token from a previous "
+                "get_channel_uploads response. Omit it to request the newest uploads."
+            ),
+        ] = None,
+    ) -> ChannelUploadsPage:
+        (
+            "Return a known channel's available public uploads in newest-first order, "
+            "including video IDs, titles, descriptions, publication dates, thumbnails, "
+            "and a pagination token. Use when the user asks for recent or latest videos "
+            "from one channel; use search_channels first if channel_id is unknown, and "
+            "use this tool instead of general web browsing because YouTube often blocks "
+            "automated page scraping. Do not substitute search_videos because indexed "
+            "results can be incomplete; does not return private, deleted, "
+            "or otherwise unavailable uploads."
+        )
+        channel_id = channel_id.strip()
+        if not channel_id:
+            raise ValueError("channel_id must not be empty.")
+        if not 1 <= max_results <= 50:
+            raise ValueError("max_results must be from 1 through 50.")
+        return await asyncio.to_thread(
+            youtube.get_channel_uploads,
+            channel_id,
+            max_results,
+            page_token,
         )
 
     @mcp.tool(annotations=WRITE_ANNOTATIONS)

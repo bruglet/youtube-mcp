@@ -14,9 +14,13 @@ Local speech recognition is a separate operation. It uses `yt-dlp` and `faster-w
 | `get_transcript` | Get an existing caption track as text, segments, or both. |
 | `transcribe` | Run local speech recognition and return text, segments, or both. |
 | `search_videos` | Search YouTube with the YouTube Data API. |
+| `search_channels` | Search for YouTube channels and return stable channel IDs. |
+| `get_channel_uploads` | Get the newest public uploads from one channel. |
 | `materialize_video` | Create a downloadable MP4 artifact with a maximum height of 720p. |
 
-All video tools accept a raw video ID or a normal YouTube video URL.
+Tools that operate on one video accept a raw video ID or a normal YouTube video URL.
+
+Use `search_channels` to find a channel ID. Then pass that ID to `get_channel_uploads`.
 
 `get_transcript` and `transcribe` accept `output` as `text`, `segments`, or `both`. The default is `text`.
 
@@ -73,7 +77,7 @@ The server reads these environment variables at startup:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `YOUTUBE_API_KEY` | Optional | YouTube Data API v3 key for `get_video_details` and `search_videos`. |
+| `YOUTUBE_API_KEY` | Optional | YouTube Data API v3 key for video details, search, channel search, and channel uploads. |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | Public server URL without `/mcp`. |
 | `AUTH_MODE` | `cloudflare` | Use `cloudflare` in production or `disabled` on loopback for local work. |
 | `CF_ACCESS_TEAM_DOMAIN` | Required in production | Cloudflare Access team domain. |
@@ -230,7 +234,3 @@ Each cached transcription contains full text and timestamped segments. A differe
 A completed artifact remains available across container restarts. Its MCP result includes a resource link and a normal download URL.
 
 The server removes partial files after an error, cancellation, or timeout. `yt-dlp` errors include a short diagnostic message.
-
-## License notice
-
-The upstream project does not include a license file. This public fork does not add or imply redistribution rights. Obtain permission before you redistribute the code.

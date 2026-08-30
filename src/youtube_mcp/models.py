@@ -68,6 +68,23 @@ class VideoSearchResult(BaseModel):
     thumbnail_url: str
 
 
+class ChannelSearchResult(BaseModel):
+    channel_id: str
+    channel_url: str
+    title: str
+    description: str
+    published_at: str
+    thumbnail_url: str
+
+
+class ChannelUploadsPage(BaseModel):
+    channel_id: str
+    channel_url: str
+    channel_title: str
+    videos: list[VideoSearchResult]
+    next_page_token: str | None = None
+
+
 class WhisperSegment(BaseModel):
     start: float
     end: float

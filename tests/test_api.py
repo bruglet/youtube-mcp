@@ -3,7 +3,12 @@ from googleapiclient.errors import HttpError
 from httplib2 import Response
 
 from youtube_mcp.api import YouTubeAPI, duration_seconds
-from youtube_mcp.models import VideoMetadata, VideoSearchResult
+from youtube_mcp.models import (
+    ChannelSearchResult,
+    ChannelUploadsPage,
+    VideoMetadata,
+    VideoSearchResult,
+)
 
 
 _MOCK_RESPONSE = {
@@ -116,6 +121,54 @@ _MOCK_SEARCH_RESPONSE = {
 }
 
 
+_MOCK_CHANNEL_SEARCH_RESPONSE = {
+    "items": [
+        {
+            "id": {"channelId": "UC38IQsAvIsxxjztdMZQtwHA"},
+            "snippet": {
+                "title": "A channel",
+                "description": "A channel description",
+                "publishedAt": "2020-01-02T03:04:05Z",
+                "thumbnails": {"default": {"url": "https://example.com/channel.jpg"}},
+            },
+        }
+    ]
+}
+
+
+_MOCK_CHANNEL_RESPONSE = {
+    "items": [
+        {
+            "id": "UC38IQsAvIsxxjztdMZQtwHA",
+            "snippet": {"title": "A channel"},
+            "contentDetails": {
+                "relatedPlaylists": {"uploads": "UU38IQsAvIsxxjztdMZQtwHA"}
+            },
+        }
+    ]
+}
+
+
+_MOCK_UPLOADS_RESPONSE = {
+    "nextPageToken": "NEXT_PAGE",
+    "items": [
+        {
+            "snippet": {
+                "title": "Latest upload",
+                "description": "An upload description",
+                "publishedAt": "2026-06-20T10:01:00Z",
+                "resourceId": {"videoId": "dQw4w9WgXcQ"},
+                "thumbnails": {"default": {"url": "https://example.com/upload.jpg"}},
+            },
+            "contentDetails": {
+                "videoId": "dQw4w9WgXcQ",
+                "videoPublishedAt": "2026-06-20T10:00:00Z",
+            },
+        }
+    ],
+}
+
+
 def test_search_videos_returns_results_and_passes_parameters(mocker):
     mock_build = mocker.patch("youtube_mcp.api.build")
     service = mock_build.return_value
@@ -137,7 +190,76 @@ def test_search_videos_returns_results_and_passes_parameters(mocker):
     )
 
 
-@pytest.mark.parametrize("method", ["get_video", "search_videos"])
+def test_search_channels_returns_results_and_passes_parameters(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.search.return_value.list.return_value.execute.return_value = (
+        _MOCK_CHANNEL_SEARCH_RESPONSE
+    )
+    api = YouTubeAPI("fake-key")
+
+    results = api.search_channels("A channel", max_results=5)
+
+    assert len(results) == 1
+    assert isinstance(results[0], ChannelSearchResult)
+    assert results[0].channel_id == "UC38IQsAvIsxxjztdMZQtwHA"
+    assert results[0].channel_url.endswith("/channel/UC38IQsAvIsxxjztdMZQtwHA")
+    service.search.return_value.list.assert_called_once_with(
+        part="snippet",
+        q="A channel",
+        type="channel",
+        maxResults=5,
+    )
+
+
+def test_get_channel_uploads_returns_page_and_passes_parameters(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.channels.return_value.list.return_value.execute.return_value = (
+        _MOCK_CHANNEL_RESPONSE
+    )
+    service.playlistItems.return_value.list.return_value.execute.return_value = (
+        _MOCK_UPLOADS_RESPONSE
+    )
+    api = YouTubeAPI("fake-key")
+
+    page = api.get_channel_uploads(
+        "UC38IQsAvIsxxjztdMZQtwHA",
+        max_results=5,
+        page_token="PAGE_TOKEN",
+    )
+
+    assert isinstance(page, ChannelUploadsPage)
+    assert page.channel_id == "UC38IQsAvIsxxjztdMZQtwHA"
+    assert page.channel_title == "A channel"
+    assert page.next_page_token == "NEXT_PAGE"
+    assert len(page.videos) == 1
+    assert page.videos[0].published_at == "2026-06-20T10:00:00Z"
+    service.channels.return_value.list.assert_called_once_with(
+        part="snippet,contentDetails",
+        id="UC38IQsAvIsxxjztdMZQtwHA",
+    )
+    service.playlistItems.return_value.list.assert_called_once_with(
+        part="snippet,contentDetails",
+        playlistId="UU38IQsAvIsxxjztdMZQtwHA",
+        maxResults=5,
+        pageToken="PAGE_TOKEN",
+    )
+
+
+def test_get_channel_uploads_channel_not_found(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.channels.return_value.list.return_value.execute.return_value = {"items": []}
+
+    with pytest.raises(ValueError, match="Channel not found"):
+        YouTubeAPI("fake-key").get_channel_uploads("missing")
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["get_video", "search_videos", "search_channels", "get_channel_uploads"],
+)
 def test_data_api_methods_require_api_key(method):
     with pytest.raises(ValueError, match="Set YOUTUBE_API_KEY"):
         getattr(YouTubeAPI(""), method)("test")

@@ -32,7 +32,7 @@ def _settings(tmp_path: Path, auth_mode: str = "disabled") -> Settings:
     )
 
 
-def test_registers_exactly_five_tools(tmp_path):
+def test_registers_exactly_seven_tools(tmp_path):
     app = create_app(_settings(tmp_path))
     tools = asyncio.run(app.state.mcp.list_tools())
     assert {tool.name for tool in tools} == {
@@ -40,6 +40,8 @@ def test_registers_exactly_five_tools(tmp_path):
         "get_transcript",
         "transcribe",
         "search_videos",
+        "search_channels",
+        "get_channel_uploads",
         "materialize_video",
     }
 
@@ -53,6 +55,8 @@ def test_tool_annotations(tmp_path):
         "get_transcript",
         "transcribe",
         "search_videos",
+        "search_channels",
+        "get_channel_uploads",
     ):
         annotations = tools[name].annotations
         assert annotations.readOnlyHint is True
@@ -64,7 +68,29 @@ def test_tool_annotations(tmp_path):
     assert annotations.readOnlyHint is False
     assert annotations.destructiveHint is False
     assert annotations.idempotentHint is True
-    assert annotations.openWorldHint is True
+    assert annotations.openWorldHint is False
+
+
+def test_tool_descriptions_guide_youtube_workflows(tmp_path):
+    app = create_app(_settings(tmp_path))
+    tools = {tool.name: tool for tool in asyncio.run(app.state.mcp.list_tools())}
+
+    for name in (
+        "get_video_details",
+        "get_transcript",
+        "search_channels",
+        "get_channel_uploads",
+    ):
+        assert "web browsing" in tools[name].description
+
+    assert "get_channel_uploads" in tools["search_channels"].description
+    assert "search_channels" in tools["get_channel_uploads"].description
+    assert "search_videos" in tools["get_channel_uploads"].description
+
+    channel_id = tools["get_channel_uploads"].inputSchema["properties"]["channel_id"]
+    page_token = tools["get_channel_uploads"].inputSchema["properties"]["page_token"]
+    assert "search_channels" in channel_id["description"]
+    assert "next_page_token" in page_token["description"]
 
 
 @pytest.mark.parametrize(
@@ -118,6 +144,8 @@ def test_all_tools_expose_output_schemas(tmp_path):
     assert all(tool.outputSchema is not None for tool in tools.values())
     assert tools["get_video_details"].outputSchema["title"] == "VideoMetadata"
     assert "result" in tools["search_videos"].outputSchema["properties"]
+    assert "result" in tools["search_channels"].outputSchema["properties"]
+    assert tools["get_channel_uploads"].outputSchema["title"] == "ChannelUploadsPage"
     assert tools["materialize_video"].outputSchema["title"] == "ArtifactMetadata"
 
     transcript_schema = tools["get_transcript"].outputSchema
