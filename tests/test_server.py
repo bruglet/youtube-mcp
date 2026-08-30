@@ -68,7 +68,7 @@ def test_tool_annotations(tmp_path):
     assert annotations.readOnlyHint is False
     assert annotations.destructiveHint is False
     assert annotations.idempotentHint is True
-    assert annotations.openWorldHint is False
+    assert annotations.openWorldHint is True
 
 
 def test_tool_descriptions_guide_youtube_workflows(tmp_path):
