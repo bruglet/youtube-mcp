@@ -82,6 +82,7 @@ async def test_transcriber_reuses_cached_audio(tmp_path, mocker):
     )
 
     assert result.text == "text"
+    assert result.cached is False
     downloader.download_audio.assert_not_called()
     manager.transcribe.assert_called_once()
     cache.store_transcription.assert_called_once_with(
@@ -109,7 +110,9 @@ async def test_transcriber_reuses_cached_result():
         "dQw4w9WgXcQ", "https://example.com", None, "auto"
     )
 
-    assert result == cached
+    assert result.model_dump(exclude={"cached"}) == cached.model_dump(exclude={"cached"})
+    assert cached.cached is False
+    assert result.cached is True
     downloader.probe.assert_not_called()
     manager.transcribe.assert_not_called()
 

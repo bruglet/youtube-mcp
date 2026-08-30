@@ -48,6 +48,12 @@ async def test_artifact_survives_store_recreation(tmp_path):
     assert resolved[0].max_height == 720
     assert resolved[1].read_bytes() == b"video-data"
     assert metadata.download_url.startswith("https://mcp.example.com/artifacts/")
+    assert metadata.cached is False
+
+    reused = await recreated.materialize(
+        "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", 720
+    )
+    assert reused.cached is True
     assert datetime.fromisoformat(metadata.expires_at) > datetime.now(timezone.utc)
 
 

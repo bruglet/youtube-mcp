@@ -131,7 +131,7 @@ class ArtifactStore:
         artifact_id = self._cache.key(f"video:{video_id}:{max_height}")
         cached = self.resolve(artifact_id)
         if cached:
-            return cached[0]
+            return cached[0].model_copy(update={"cached": True})
 
         info = await self._downloader.probe(canonical_url)
         duration = float(info.get("duration") or 0)

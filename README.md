@@ -225,6 +225,8 @@ The server caches downloaded audio, transcription results, and materialized vide
 
 Each cached transcription contains full text and timestamped segments. A different `output` value reuses this result without running Whisper again.
 
+`transcribe` and `materialize_video` return `cached` to show whether the server reused a completed result.
+
 A completed artifact remains available across container restarts. Its MCP result includes a resource link and a normal download URL.
 
 The server removes partial files after an error, cancellation, or timeout. `yt-dlp` errors include a short diagnostic message.

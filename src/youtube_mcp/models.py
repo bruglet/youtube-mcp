@@ -48,8 +48,14 @@ class TranscriptResult(BaseModel):
     is_translatable: bool | None = None
     available_languages: list[str] = Field(default_factory=list)
     reason: str | None = None
-    text: str = ""
-    segments: list[TranscriptSegment] = Field(default_factory=list)
+    text: str = Field(
+        default="",
+        description="Included when output is text or both.",
+    )
+    segments: list[TranscriptSegment] = Field(
+        default_factory=list,
+        description="Included when output is segments or both.",
+    )
 
 
 class VideoSearchResult(BaseModel):
@@ -76,6 +82,18 @@ class TranscriptionResult(BaseModel):
     language_code: str | None = None
     language_probability: float | None = None
     model: str
+    cached: bool = False
+
+
+class TranscriptionToolOutput(TranscriptionResult):
+    text: str = Field(
+        default="",
+        description="Included when output is text or both.",
+    )
+    segments: list[WhisperSegment] = Field(
+        default_factory=list,
+        description="Included when output is segments or both.",
+    )
 
 
 class ArtifactMetadata(BaseModel):
@@ -89,3 +107,4 @@ class ArtifactMetadata(BaseModel):
     download_url: str
     created_at: str
     expires_at: str
+    cached: bool = False

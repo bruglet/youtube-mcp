@@ -1,12 +1,14 @@
 import asyncio
+import json
 from collections.abc import Awaitable
 from contextlib import asynccontextmanager, suppress
-from typing import Literal, TypeVar
+from typing import Annotated, Literal, TypeVar
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, ResourceLink, TextContent
+from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
+from pydantic import Field
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, Response
@@ -18,7 +20,14 @@ from .auth import CloudflareAccessMiddleware, CloudflareJWTVerifier
 from .cache import ArtifactStore, MediaCache
 from .config import Settings
 from .downloader import YtDlpRunner
-from .models import TranscriptionResult, TranscriptResult, VideoMetadata, VideoSearchResult
+from .models import (
+    ArtifactMetadata,
+    TranscriptionResult,
+    TranscriptionToolOutput,
+    TranscriptResult,
+    VideoMetadata,
+    VideoSearchResult,
+)
 from .transcript import TranscriptFetcher
 from .video import normalize_video
 from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
@@ -27,6 +36,19 @@ from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
 T = TypeVar("T")
 SearchOrder = Literal["date", "rating", "relevance", "title", "viewCount"]
 TranscriptOutput = Literal["text", "segments", "both"]
+
+READ_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
 
 
 def _select_transcript_output(
@@ -39,6 +61,22 @@ def _select_transcript_output(
     elif output == "segments":
         payload.pop("text", None)
     return payload
+
+
+def _transcript_call_result(
+    result: TranscriptResult | TranscriptionResult,
+    output: TranscriptOutput,
+) -> CallToolResult:
+    payload = _select_transcript_output(result, output)
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=json.dumps(payload, ensure_ascii=False, indent=2),
+            )
+        ],
+        structuredContent=payload,
+    )
 
 
 async def _run_long_operation(
@@ -114,40 +152,101 @@ def create_app(settings: Settings | None = None) -> Starlette:
         ),
     )
 
-    @mcp.tool()
-    async def get_video_details(video: str) -> VideoMetadata:
-        """Get metadata for a YouTube video. Accepts a video ID or URL."""
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def get_video_details(
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or a YouTube URL. "
+                "Use search_videos to find an ID when the user has not identified a video."
+            ),
+        ],
+    ) -> VideoMetadata:
+        (
+            "Return metadata for one video, including its title, channel, description, "
+            "duration, publication date, statistics, caption status, and thumbnails. "
+            "Use when the user asks about a known video; use get_transcript for its "
+            "spoken content and search_videos when no video is identified. Requires a "
+            "configured YouTube API key."
+        )
         video_id, _ = normalize_video(video)
         return await asyncio.to_thread(youtube.get_video, video_id)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ANNOTATIONS)
     async def get_transcript(
-        video: str,
-        language: str | None = None,
-        output: TranscriptOutput = "text",
-    ) -> dict[str, object]:
-        """Get existing YouTube captions without using speech recognition.
-
-        Select text, timestamped segments, or both with output.
-        """
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or a YouTube URL. "
+                "Use search_videos to find an ID when the user has not identified a video."
+            ),
+        ],
+        language: Annotated[
+            str | None,
+            Field(
+                description="A preferred YouTube caption language code, such as en or zh-Hans. "
+                "Omit it to prefer a manual track, then English among equivalent tracks."
+            ),
+        ] = None,
+        output: Annotated[
+            TranscriptOutput,
+            Field(
+                description="The response form: text for compact plain text, segments for "
+                "timestamps, or both only when both forms are needed."
+            ),
+        ] = "text",
+    ) -> Annotated[CallToolResult, TranscriptResult]:
+        (
+            "Return YouTube-provided captions with language details as text, "
+            "timestamped segments, or both. Use for summaries, quotations, or "
+            "questions about spoken content; prefer this fast tool before transcribe, "
+            "and use transcribe only when captions are unavailable or unsuitable. "
+            "This tool never runs speech recognition and can return available=false."
+        )
         video_id, _ = normalize_video(video)
         result = await asyncio.to_thread(transcripts.get_transcript, video_id, language)
-        return _select_transcript_output(result, output)
+        return _transcript_call_result(result, output)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ANNOTATIONS)
     async def transcribe(
-        video: str,
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or a YouTube URL. "
+                "Use search_videos to find an ID when the user has not identified a video."
+            ),
+        ],
         context: Context,
-        language: str | None = None,
-        model: ModelChoice = "auto",
-        output: TranscriptOutput = "text",
-    ) -> dict[str, object]:
-        """Explicitly download audio and run local speech recognition.
-
-        This operation can take much longer than get_transcript. Use english or
-        multilingual to override automatic model routing. Select text,
-        timestamped segments, or both with output.
-        """
+        language: Annotated[
+            str | None,
+            Field(
+                description="An optional speech language hint, such as en, zh, or zh-CN. "
+                "Omit it for automatic detection."
+            ),
+        ] = None,
+        model: Annotated[
+            ModelChoice,
+            Field(
+                description="The speech-recognition model family. Use auto normally, "
+                "english for English-only speech, or multilingual for other languages."
+            ),
+        ] = "auto",
+        output: Annotated[
+            TranscriptOutput,
+            Field(
+                description="The response form: text for compact plain text, segments for "
+                "timestamps, or both only when both forms are needed."
+            ),
+        ] = "text",
+    ) -> Annotated[CallToolResult, TranscriptionToolOutput]:
+        (
+            "Return locally generated speech-to-text with language detection, model "
+            "and cache information, and optional timestamps. Use when the user "
+            "explicitly requests transcription or get_transcript reports that captions "
+            "are unavailable or unsuitable; prefer get_transcript first because this "
+            "tool can be much slower. Live or overlong videos are rejected, and the "
+            "first call can download a model."
+        )
         video_id, canonical_url = normalize_video(video)
         await context.report_progress(progress=0.0, total=1.0, message="Preparing audio")
         result = await _run_long_operation(
@@ -157,16 +256,47 @@ def create_app(settings: Settings | None = None) -> Starlette:
             "Local transcription is in progress",
         )
         await context.report_progress(progress=1.0, total=1.0, message="Transcription completed")
-        return _select_transcript_output(result, output)
+        return _transcript_call_result(result, output)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ANNOTATIONS)
     async def search_videos(
-        query: str,
-        max_results: int = 10,
-        language: str | None = None,
-        order: SearchOrder = "relevance",
+        query: Annotated[
+            str,
+            Field(
+                description="Search terms based on the user request: a topic, title, "
+                "channel, or keywords. For a known video ID or URL, use "
+                "get_video_details instead."
+            ),
+        ],
+        max_results: Annotated[
+            int,
+            Field(
+                description="The number of videos to return, from 1 through 50. Keep this "
+                "small unless the user requests a broad result set."
+            ),
+        ] = 10,
+        language: Annotated[
+            str | None,
+            Field(
+                description="An ISO 639-1 language code, such as en or zh, used to bias "
+                "relevance. It does not restrict results to that language."
+            ),
+        ] = None,
+        order: Annotated[
+            SearchOrder,
+            Field(
+                description="The result order. Use relevance for general discovery, or "
+                "select date, rating, title, or viewCount when the user requests it."
+            ),
+        ] = "relevance",
     ) -> list[VideoSearchResult]:
-        """Search YouTube with the official YouTube Data API."""
+        (
+            "Return matching videos with IDs, titles, channels, publication dates, "
+            "descriptions, and thumbnails. Use when the user asks to find or discover "
+            "videos, then pass a returned video_id to another tool as needed; do not "
+            "use for details about one known video. Requires a configured YouTube API "
+            "key."
+        )
         if not query.strip():
             raise ValueError("The search query must not be empty.")
         if not 1 <= max_results <= 50:
@@ -175,13 +305,30 @@ def create_app(settings: Settings | None = None) -> Starlette:
             youtube.search_videos, query, max_results, language, order
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_ANNOTATIONS)
     async def materialize_video(
-        video: str,
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or a YouTube URL. "
+                "Use search_videos to find an ID when the user has not identified a video."
+            ),
+        ],
         context: Context,
-        max_height: Literal[360, 480, 720] = 720,
-    ) -> CallToolResult:
-        """Create a downloadable MP4 artifact without analyzing its content."""
+        max_height: Annotated[
+            Literal[360, 480, 720],
+            Field(
+                description="The maximum MP4 height in pixels. Use 720 unless the user "
+                "requests a smaller download; source quality can reduce the actual height."
+            ),
+        ] = 720,
+    ) -> Annotated[CallToolResult, ArtifactMetadata]:
+        (
+            "Return a temporary authenticated MP4 download link and file metadata. "
+            "Use when the user asks to download or obtain the video file; do not use "
+            "for metadata, captions, or speech transcription, and do not imply that "
+            "the video was analyzed. Large, overlong, or live videos can be rejected."
+        )
         video_id, canonical_url = normalize_video(video)
         await context.report_progress(progress=0.0, total=1.0, message="Preparing video")
         metadata = await _run_long_operation(

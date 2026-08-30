@@ -167,7 +167,7 @@ class WhisperTranscriber:
             )
             cached = self._cache.cached_transcription(cache_key)
             if cached is not None:
-                return cached
+                return cached.model_copy(update={"cached": True})
 
             info = await self._downloader.probe(canonical_url)
             duration = float(info.get("duration") or 0)
