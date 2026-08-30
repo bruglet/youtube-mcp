@@ -11,12 +11,14 @@ Local speech recognition is a separate operation. It uses `yt-dlp` and `faster-w
 | Tool | Purpose |
 |---|---|
 | `get_video_details` | Get video metadata from the YouTube Data API. |
-| `get_transcript` | Get an existing manual or generated caption track. |
-| `transcribe` | Download audio and run local speech recognition. |
+| `get_transcript` | Get an existing caption track as text, segments, or both. |
+| `transcribe` | Run local speech recognition and return text, segments, or both. |
 | `search_videos` | Search YouTube with the YouTube Data API. |
 | `materialize_video` | Create a downloadable MP4 artifact with a maximum height of 720p. |
 
 All video tools accept a raw video ID or a normal YouTube video URL.
+
+`get_transcript` and `transcribe` accept `output` as `text`, `segments`, or `both`. The default is `text`.
 
 `get_transcript` never calls Whisper. If no matching caption track exists, the tool returns `available: false`.
 
@@ -25,7 +27,7 @@ All video tools accept a raw video ID or a normal YouTube video URL.
 ## Requirements
 
 - Python 3.11 or later for local development.
-- A YouTube Data API v3 key.
+- Optional: a YouTube Data API v3 key for metadata and search.
 - FFmpeg for local video materialization.
 - An amd64 processor with AVX2 for the supplied container image.
 - Cloudflare Tunnel and Cloudflare Access for production use.
@@ -219,7 +221,9 @@ The Quadlet also sets `AutoUpdate=registry`. Enable the Podman user auto-update 
 
 ## Cache behavior
 
-The server caches downloaded audio and materialized videos. It removes expired files and the oldest files above the total limit.
+The server caches downloaded audio, transcription results, and materialized videos. It removes expired files and the oldest files above the total limit.
+
+Each cached transcription contains full text and timestamped segments. A different `output` value reuses this result without running Whisper again.
 
 A completed artifact remains available across container restarts. Its MCP result includes a resource link and a normal download URL.
 

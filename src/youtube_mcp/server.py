@@ -26,6 +26,19 @@ from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
 
 T = TypeVar("T")
 SearchOrder = Literal["date", "rating", "relevance", "title", "viewCount"]
+TranscriptOutput = Literal["text", "segments", "both"]
+
+
+def _select_transcript_output(
+    result: TranscriptResult | TranscriptionResult,
+    output: TranscriptOutput,
+) -> dict[str, object]:
+    payload = result.model_dump(mode="json")
+    if output == "text":
+        payload.pop("segments", None)
+    elif output == "segments":
+        payload.pop("text", None)
+    return payload
 
 
 async def _run_long_operation(
@@ -108,13 +121,18 @@ def create_app(settings: Settings | None = None) -> Starlette:
         return await asyncio.to_thread(youtube.get_video, video_id)
 
     @mcp.tool()
-    async def get_transcript(video: str, language: str | None = None) -> TranscriptResult:
+    async def get_transcript(
+        video: str,
+        language: str | None = None,
+        output: TranscriptOutput = "text",
+    ) -> dict[str, object]:
         """Get existing YouTube captions without using speech recognition.
 
-        The result includes timestamps and caption track language details.
+        Select text, timestamped segments, or both with output.
         """
         video_id, _ = normalize_video(video)
-        return await asyncio.to_thread(transcripts.get_transcript, video_id, language)
+        result = await asyncio.to_thread(transcripts.get_transcript, video_id, language)
+        return _select_transcript_output(result, output)
 
     @mcp.tool()
     async def transcribe(
@@ -122,11 +140,13 @@ def create_app(settings: Settings | None = None) -> Starlette:
         context: Context,
         language: str | None = None,
         model: ModelChoice = "auto",
-    ) -> TranscriptionResult:
+        output: TranscriptOutput = "text",
+    ) -> dict[str, object]:
         """Explicitly download audio and run local speech recognition.
 
         This operation can take much longer than get_transcript. Use english or
-        multilingual to override automatic model routing.
+        multilingual to override automatic model routing. Select text,
+        timestamped segments, or both with output.
         """
         video_id, canonical_url = normalize_video(video)
         await context.report_progress(progress=0.0, total=1.0, message="Preparing audio")
@@ -137,7 +157,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
             "Local transcription is in progress",
         )
         await context.report_progress(progress=1.0, total=1.0, message="Transcription completed")
-        return result
+        return _select_transcript_output(result, output)
 
     @mcp.tool()
     async def search_videos(

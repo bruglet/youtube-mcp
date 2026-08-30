@@ -68,6 +68,7 @@ async def test_transcriber_reuses_cached_audio(tmp_path, mocker):
 
     downloader.probe = probe
     cache = MagicMock()
+    cache.cached_transcription.return_value = None
     cache.cached_audio.return_value = tmp_path / "audio.webm"
     transcriber = WhisperTranscriber(manager, downloader, cache, 3600)
 
@@ -83,6 +84,34 @@ async def test_transcriber_reuses_cached_audio(tmp_path, mocker):
     assert result.text == "text"
     downloader.download_audio.assert_not_called()
     manager.transcribe.assert_called_once()
+    cache.store_transcription.assert_called_once_with(
+        manager.result_cache_key.return_value, result
+    )
+
+
+@pytest.mark.asyncio
+async def test_transcriber_reuses_cached_result():
+    cached = TranscriptionResult(
+        video_id="dQw4w9WgXcQ",
+        canonical_url="https://example.com",
+        text="cached",
+        segments=[],
+        model="small.en",
+    )
+    manager = MagicMock()
+    manager.result_cache_key.return_value = "result-key"
+    downloader = MagicMock()
+    cache = MagicMock()
+    cache.cached_transcription.return_value = cached
+    transcriber = WhisperTranscriber(manager, downloader, cache, 3600)
+
+    result = await transcriber.transcribe(
+        "dQw4w9WgXcQ", "https://example.com", None, "auto"
+    )
+
+    assert result == cached
+    downloader.probe.assert_not_called()
+    manager.transcribe.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -93,7 +122,10 @@ async def test_transcriber_rejects_long_video():
         return {"duration": 3601, "is_live": False}
 
     downloader.probe = probe
-    transcriber = WhisperTranscriber(MagicMock(), downloader, MagicMock(), 3600)
+    manager = MagicMock()
+    cache = MagicMock()
+    cache.cached_transcription.return_value = None
+    transcriber = WhisperTranscriber(manager, downloader, cache, 3600)
     with pytest.raises(ValueError, match="duration limit"):
         await transcriber.transcribe(
             "dQw4w9WgXcQ", "https://example.com", None, "auto"

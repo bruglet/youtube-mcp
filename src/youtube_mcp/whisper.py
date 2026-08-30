@@ -105,6 +105,17 @@ class WhisperModelManager:
         self._loaded_name = checkpoint
         return self._model
 
+    def result_cache_key(
+        self, video_id: str, language: str | None, choice: ModelChoice
+    ) -> str:
+        family = self._select_family(language, choice)
+        language_key = (language or "auto").split("-", 1)[0].lower()
+        checkpoint = self._models[family]
+        return (
+            f"transcription:v1:{video_id}:{checkpoint}:"
+            f"{language_key}:beam={self._beam_size}"
+        )
+
     @staticmethod
     def _select_family(language: str | None, choice: ModelChoice) -> str:
         if choice != "auto":
@@ -151,6 +162,13 @@ class WhisperTranscriber:
         model_choice: ModelChoice,
     ) -> TranscriptionResult:
         async with self._semaphore:
+            cache_key = self._manager.result_cache_key(
+                video_id, language, model_choice
+            )
+            cached = self._cache.cached_transcription(cache_key)
+            if cached is not None:
+                return cached
+
             info = await self._downloader.probe(canonical_url)
             duration = float(info.get("duration") or 0)
             if not duration:
@@ -185,5 +203,6 @@ class WhisperTranscriber:
             except asyncio.CancelledError:
                 cancel_event.set()
                 raise
+            self._cache.store_transcription(cache_key, result)
             self._cache.cleanup()
             return result

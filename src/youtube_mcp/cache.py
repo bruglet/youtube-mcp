@@ -6,7 +6,7 @@ import re
 import tempfile
 
 from .downloader import YtDlpRunner, remove_directory
-from .models import ArtifactMetadata
+from .models import ArtifactMetadata, TranscriptionResult
 
 
 def _utc_now() -> datetime:
@@ -18,10 +18,16 @@ class MediaCache:
         self.root = root
         self.audio_dir = root / "audio"
         self.artifact_dir = root / "artifacts"
+        self.transcript_dir = root / "transcripts"
         self.work_dir = root / "work"
         self.ttl_seconds = ttl_seconds
         self.max_bytes = max_bytes
-        for path in (self.audio_dir, self.artifact_dir, self.work_dir):
+        for path in (
+            self.audio_dir,
+            self.artifact_dir,
+            self.transcript_dir,
+            self.work_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def cleanup(self) -> None:
@@ -33,7 +39,8 @@ class MediaCache:
         media_files = [
             path
             for path in self.root.rglob("*")
-            if path.is_file() and path.suffix != ".json"
+            if path.is_file()
+            and (path.suffix != ".json" or path.parent == self.transcript_dir)
         ]
         for path in media_files:
             if path.stat().st_mtime < cutoff:
@@ -65,6 +72,25 @@ class MediaCache:
         destination = self.audio_dir / f"{key}{source.suffix.lower()}"
         os.replace(source, destination)
         return destination
+
+    def cached_transcription(self, cache_key: str) -> TranscriptionResult | None:
+        path = self.transcript_dir / f"{self.key(cache_key)}.json"
+        if not path.is_file():
+            return None
+        if path.stat().st_mtime < _utc_now().timestamp() - self.ttl_seconds:
+            path.unlink(missing_ok=True)
+            return None
+        try:
+            result = TranscriptionResult.model_validate_json(path.read_text("utf-8"))
+        except (ValueError, OSError):
+            path.unlink(missing_ok=True)
+            return None
+        os.utime(path)
+        return result
+
+    def store_transcription(self, cache_key: str, result: TranscriptionResult) -> None:
+        path = self.transcript_dir / f"{self.key(cache_key)}.json"
+        path.write_text(result.model_dump_json(), encoding="utf-8")
 
     def make_work_dir(self) -> Path:
         return Path(tempfile.mkdtemp(prefix="youtube-mcp-", dir=self.work_dir))

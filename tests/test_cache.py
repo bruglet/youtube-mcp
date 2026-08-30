@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from youtube_mcp.cache import ArtifactStore, MediaCache
+from youtube_mcp.models import TranscriptionResult, WhisperSegment
 
 
 class FakeDownloader:
@@ -48,6 +49,25 @@ async def test_artifact_survives_store_recreation(tmp_path):
     assert resolved[1].read_bytes() == b"video-data"
     assert metadata.download_url.startswith("https://mcp.example.com/artifacts/")
     assert datetime.fromisoformat(metadata.expires_at) > datetime.now(timezone.utc)
+
+
+def test_transcription_result_survives_cache_recreation(tmp_path):
+    result = TranscriptionResult(
+        video_id="dQw4w9WgXcQ",
+        canonical_url="https://example.com",
+        text="hello",
+        segments=[WhisperSegment(start=0.0, end=1.0, text="hello")],
+        language_code="en",
+        language_probability=0.99,
+        model="small.en",
+    )
+    cache = MediaCache(tmp_path, ttl_seconds=3600, max_bytes=1024)
+    cache.store_transcription("result-key", result)
+
+    recreated = MediaCache(tmp_path, ttl_seconds=3600, max_bytes=1024)
+    cached = recreated.cached_transcription("result-key")
+
+    assert cached == result
 
 
 def test_cache_removes_expired_audio(tmp_path):

@@ -7,8 +7,12 @@ import httpx
 import pytest
 
 from youtube_mcp.config import Settings
-from youtube_mcp.models import ArtifactMetadata
-from youtube_mcp.server import create_app
+from youtube_mcp.models import (
+    ArtifactMetadata,
+    TranscriptResult,
+    TranscriptSegment,
+)
+from youtube_mcp.server import _select_transcript_output, create_app
 
 
 def _settings(tmp_path: Path, auth_mode: str = "disabled") -> Settings:
@@ -33,6 +37,35 @@ def test_registers_exactly_five_tools(tmp_path):
         "search_videos",
         "materialize_video",
     }
+
+
+@pytest.mark.parametrize(
+    ("output", "has_text", "has_segments"),
+    [("text", True, False), ("segments", False, True), ("both", True, True)],
+)
+def test_selects_transcript_output(output, has_text, has_segments):
+    result = TranscriptResult(
+        video_id="dQw4w9WgXcQ",
+        available=True,
+        text="hello",
+        segments=[TranscriptSegment(start=0.0, end=1.0, duration=1.0, text="hello")],
+    )
+
+    payload = _select_transcript_output(result, output)
+
+    assert ("text" in payload) is has_text
+    assert ("segments" in payload) is has_segments
+    assert payload["video_id"] == "dQw4w9WgXcQ"
+
+
+def test_transcript_tools_expose_output_schema(tmp_path):
+    app = create_app(_settings(tmp_path))
+    tools = {tool.name: tool for tool in asyncio.run(app.state.mcp.list_tools())}
+
+    for name in ("get_transcript", "transcribe"):
+        schema = tools[name].inputSchema["properties"]["output"]
+        assert schema["default"] == "text"
+        assert set(schema["enum"]) == {"text", "segments", "both"}
 
 
 @pytest.mark.asyncio
