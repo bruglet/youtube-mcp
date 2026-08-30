@@ -1,66 +1,72 @@
-import pytest
-from unittest.mock import MagicMock
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from types import SimpleNamespace
 
-from youtube_mcp.models import TranscriptSegment
+from youtube_transcript_api._errors import TranscriptsDisabled
+
 from youtube_mcp.transcript import TranscriptFetcher
 
 
-def _make_snippet(start, duration, text):
-    s = MagicMock()
-    s.start = start
-    s.duration = duration
-    s.text = text
-    return s
+def _snippet(start, duration, text):
+    return SimpleNamespace(start=start, duration=duration, text=text)
 
 
-_MOCK_SNIPPETS = [
-    _make_snippet(0.0, 2.5, "Never gonna give you up"),
-    _make_snippet(2.5, 2.0, "Never gonna let you down"),
-]
+def _track(code, generated, text):
+    return SimpleNamespace(
+        language_code=code,
+        language={"en": "English", "zh": "Chinese"}.get(code, code),
+        is_generated=generated,
+        is_translatable=True,
+        fetch=lambda: [_snippet(0.0, 2.5, text)],
+    )
 
 
-@pytest.fixture
-def fetcher():
-    return TranscriptFetcher()
-
-
-def test_get_transcript_with_language(fetcher, mocker):
-    mock_fetch = mocker.patch.object(fetcher._api, "fetch", return_value=_MOCK_SNIPPETS)
-
-    result = fetcher.get_transcript("dQw4w9WgXcQ", language="en")
-
-    mock_fetch.assert_called_once_with("dQw4w9WgXcQ", languages=["en"])
-    assert len(result) == 2
-    assert all(isinstance(s, TranscriptSegment) for s in result)
-    assert result[0].text == "Never gonna give you up"
-    assert result[0].start == 0.0
-    assert result[1].duration == 2.0
-
-
-def test_get_transcript_language_fallback(fetcher, mocker):
-    mock_transcript = MagicMock()
-    mock_transcript.fetch.return_value = _MOCK_SNIPPETS
-    mock_list = mocker.patch.object(fetcher._api, "list", return_value=iter([mock_transcript]))
+def test_prefers_english_manual_track(mocker):
+    fetcher = TranscriptFetcher()
+    tracks = [
+        _track("zh", False, "manual Chinese"),
+        _track("en", True, "generated English"),
+        _track("en", False, "manual English"),
+    ]
+    mocker.patch.object(fetcher._api, "list", return_value=tracks)
 
     result = fetcher.get_transcript("dQw4w9WgXcQ")
 
-    mock_list.assert_called_once_with("dQw4w9WgXcQ")
-    mock_transcript.fetch.assert_called_once()
-    assert len(result) == 2
+    assert result.available is True
+    assert result.language_code == "en"
+    assert result.is_generated is False
+    assert result.text == "manual English"
+    assert result.segments[0].end == 2.5
 
 
-def test_get_transcript_transcripts_disabled(fetcher, mocker):
+def test_requested_language_prefers_manual(mocker):
+    fetcher = TranscriptFetcher()
+    tracks = [_track("zh", True, "generated"), _track("zh", False, "manual")]
+    mocker.patch.object(fetcher._api, "list", return_value=tracks)
+
+    result = fetcher.get_transcript("dQw4w9WgXcQ", "zh")
+
+    assert result.available is True
+    assert result.text == "manual"
+    assert result.available_languages == ["zh"]
+
+
+def test_missing_requested_language_returns_promptly(mocker):
+    fetcher = TranscriptFetcher()
+    mocker.patch.object(fetcher._api, "list", return_value=[_track("en", False, "text")])
+
+    result = fetcher.get_transcript("dQw4w9WgXcQ", "fr")
+
+    assert result.available is False
+    assert result.reason == "requested_language_unavailable"
+    assert result.available_languages == ["en"]
+
+
+def test_disabled_transcripts_return_unavailable(mocker):
+    fetcher = TranscriptFetcher()
     mocker.patch.object(
-        fetcher._api, "fetch", side_effect=TranscriptsDisabled("dQw4w9WgXcQ")
+        fetcher._api, "list", side_effect=TranscriptsDisabled("dQw4w9WgXcQ")
     )
-    with pytest.raises(ValueError, match="No transcript available for: dQw4w9WgXcQ"):
-        fetcher.get_transcript("dQw4w9WgXcQ", language="en")
 
+    result = fetcher.get_transcript("dQw4w9WgXcQ")
 
-def test_get_transcript_no_transcript_found(fetcher, mocker):
-    mocker.patch.object(
-        fetcher._api, "fetch", side_effect=NoTranscriptFound("vid", ["en"], {})
-    )
-    with pytest.raises(ValueError, match="No transcript available for: vid"):
-        fetcher.get_transcript("vid", language="en")
+    assert result.available is False
+    assert result.reason == "TranscriptsDisabled"

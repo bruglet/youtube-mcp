@@ -1,0 +1,25 @@
+[Unit]
+Description=Private YouTube MCP server
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/OWNER/youtube-mcp:latest
+ContainerName=youtube-mcp
+AutoUpdate=registry
+EnvironmentFile=%h/.config/youtube-mcp/youtube-mcp.env
+PublishPort=127.0.0.1:8000:8000
+Volume=%h/.local/share/youtube-mcp/cache:/data/cache:Z,U
+Volume=%h/.local/share/youtube-mcp/models:/data/models:Z,U
+ReadOnly=true
+Tmpfs=/tmp:rw,noexec,nosuid,size=2g
+DropCapability=all
+PodmanArgs=--security-opt=no-new-privileges
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

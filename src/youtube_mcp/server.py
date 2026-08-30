@@ -1,100 +1,237 @@
-import os
-from typing import Literal
+import asyncio
+from collections.abc import Awaitable
+from contextlib import asynccontextmanager, suppress
+from typing import Literal, TypeVar
+from urllib.parse import urlparse
 
-from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, ResourceLink, TextContent
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import FileResponse, Response
+from starlette.routing import Mount, Route
+import uvicorn
 
 from .api import YouTubeAPI
-from .models import Transcript, TranscriptSegment, VideoMetadata, VideoSearchResult
-from .sarvam import SarvamTranscriber
+from .auth import CloudflareAccessMiddleware, CloudflareJWTVerifier
+from .cache import ArtifactStore, MediaCache
+from .config import Settings
+from .downloader import YtDlpRunner
+from .models import TranscriptionResult, TranscriptResult, VideoMetadata, VideoSearchResult
 from .transcript import TranscriptFetcher
-from .whisper import WhisperTranscriber
-
-load_dotenv()
-
-_api_key = os.environ.get("YOUTUBE_API_KEY")
-if not _api_key:
-    raise RuntimeError("YOUTUBE_API_KEY not set — copy .env.example to .env and add your key")
-
-_youtube = YouTubeAPI(_api_key)
-_transcript = TranscriptFetcher()
-_whisper = WhisperTranscriber("base")
-_sarvam_api_key = os.environ.get("SARVAM_API_KEY")
-_sarvam = SarvamTranscriber(_sarvam_api_key) if _sarvam_api_key else None
-
-mcp = FastMCP("youtube")
+from .video import normalize_video
+from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
 
 
-@mcp.tool()
-def get_video(video_id: str) -> VideoMetadata:
-    """Fetch metadata for a YouTube video by its ID (e.g. dQw4w9WgXcQ)."""
-    return _youtube.get_video(video_id)
+T = TypeVar("T")
+SearchOrder = Literal["date", "rating", "relevance", "title", "viewCount"]
 
 
-@mcp.tool()
-def get_transcript(video_id: str, language: str | None = None) -> list[TranscriptSegment]:
-    """Fetch timestamped transcript segments for a YouTube video.
+async def _run_long_operation(
+    operation: Awaitable[T],
+    context: Context,
+    timeout_seconds: int,
+    message: str,
+) -> T:
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(15)
+            await context.report_progress(progress=0.5, total=1.0, message=message)
 
-    Args:
-        video_id: YouTube video ID.
-        language: BCP-47 language code (e.g. 'en', 'fr'). Defaults to first available.
-    """
-    return _transcript.get_transcript(video_id, language)
-
-
-@mcp.tool()
-def search_videos(
-    query: str,
-    max_results: int = 5,
-    language: str | None = None,
-    order: str = "date",
-) -> list[VideoSearchResult]:
-    """Search YouTube videos by keyword, newest first.
-
-    Args:
-        query: Search query string.
-        max_results: Number of results to return (1–50, default 5).
-        language: BCP-47 language hint for results (e.g. 'en', 'ur'). Optional.
-        order: Sort order — date (default), relevance, viewCount, rating.
-    """
-    return _youtube.search_videos(query, max_results, language, order)
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            return await operation
+    except TimeoutError as exc:
+        raise ValueError("The operation exceeded the configured timeout.") from exc
+    finally:
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
 
 
-@mcp.tool()
-def transcribe_video(
-    video_id: str,
-    language: str | None = None,
-    provider: Literal["whisper", "sarvam"] = "whisper",
-) -> Transcript:
-    """Download audio and transcribe a YouTube video. Works even when YouTube captions are unavailable.
+def create_app(settings: Settings | None = None) -> Starlette:
+    settings = settings or Settings.from_env()
+    youtube = YouTubeAPI(settings.youtube_api_key)
+    transcripts = TranscriptFetcher()
+    cache = MediaCache(settings.cache_dir, settings.cache_ttl_seconds, settings.cache_max_bytes)
+    downloader = YtDlpRunner(settings.long_operation_timeout_seconds)
+    model_manager = WhisperModelManager(
+        english_model=settings.whisper_en_model,
+        multilingual_model=settings.whisper_multilingual_model,
+        compute_type=settings.whisper_compute_type,
+        cpu_threads=settings.whisper_cpu_threads,
+        idle_seconds=settings.whisper_model_idle_seconds,
+        beam_size=settings.whisper_beam_size,
+        model_cache_dir=settings.model_cache_dir,
+    )
+    transcriber = WhisperTranscriber(
+        model_manager,
+        downloader,
+        cache,
+        settings.max_video_duration_seconds,
+    )
+    artifact_store = ArtifactStore(
+        cache,
+        downloader,
+        settings.public_base_url,
+        settings.cache_ttl_seconds,
+        settings.artifact_max_bytes,
+        settings.max_video_duration_seconds,
+    )
 
-    Args:
-        video_id: YouTube video ID.
-        language: BCP-47 language code hint (e.g. 'en', 'hi'). Auto-detected if omitted.
-        provider: "whisper" (default) runs locally, no API key required. "sarvam" uses
-            Sarvam AI's Saaras API — strong for Indian languages, requires SARVAM_API_KEY,
-            and caps audio at 30 seconds (use "whisper" for longer videos).
-    """
-    if provider == "sarvam":
-        if _sarvam is None:
-            raise RuntimeError("SARVAM_API_KEY not set — copy .env.example to .env and add your key")
-        result = _sarvam.transcribe(video_id, language)
-        return Transcript(
-            video_id=result.video_id,
-            provider="sarvam",
-            text=result.text,
-            language_code=result.language_code,
+    public_url = urlparse(settings.public_base_url)
+    allowed_hosts = [
+        public_url.netloc,
+        "localhost",
+        f"localhost:{settings.port}",
+        "127.0.0.1",
+        f"127.0.0.1:{settings.port}",
+    ]
+    mcp = FastMCP(
+        "youtube",
+        host=settings.host,
+        port=settings.port,
+        stateless_http=True,
+        streamable_http_path="/mcp",
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=list(dict.fromkeys(allowed_hosts)),
+            allowed_origins=[settings.public_base_url],
+        ),
+    )
+
+    @mcp.tool()
+    async def get_video_details(video: str) -> VideoMetadata:
+        """Get metadata for a YouTube video. Accepts a video ID or URL."""
+        video_id, _ = normalize_video(video)
+        return await asyncio.to_thread(youtube.get_video, video_id)
+
+    @mcp.tool()
+    async def get_transcript(video: str, language: str | None = None) -> TranscriptResult:
+        """Get existing YouTube captions without using speech recognition.
+
+        The result includes timestamps and caption track language details.
+        """
+        video_id, _ = normalize_video(video)
+        return await asyncio.to_thread(transcripts.get_transcript, video_id, language)
+
+    @mcp.tool()
+    async def transcribe(
+        video: str,
+        context: Context,
+        language: str | None = None,
+        model: ModelChoice = "auto",
+    ) -> TranscriptionResult:
+        """Explicitly download audio and run local speech recognition.
+
+        This operation can take much longer than get_transcript. Use english or
+        multilingual to override automatic model routing.
+        """
+        video_id, canonical_url = normalize_video(video)
+        await context.report_progress(progress=0.0, total=1.0, message="Preparing audio")
+        result = await _run_long_operation(
+            transcriber.transcribe(video_id, canonical_url, language, model),
+            context,
+            settings.long_operation_timeout_seconds,
+            "Local transcription is in progress",
+        )
+        await context.report_progress(progress=1.0, total=1.0, message="Transcription completed")
+        return result
+
+    @mcp.tool()
+    async def search_videos(
+        query: str,
+        max_results: int = 10,
+        language: str | None = None,
+        order: SearchOrder = "relevance",
+    ) -> list[VideoSearchResult]:
+        """Search YouTube with the official YouTube Data API."""
+        if not query.strip():
+            raise ValueError("The search query must not be empty.")
+        if not 1 <= max_results <= 50:
+            raise ValueError("max_results must be from 1 through 50.")
+        return await asyncio.to_thread(
+            youtube.search_videos, query, max_results, language, order
         )
 
-    result = _whisper.transcribe(video_id, language)
-    return Transcript(
-        video_id=result.video_id,
-        provider="whisper",
-        text=result.text,
-        segments=result.segments,
-        language_code=result.language_code,
+    @mcp.tool()
+    async def materialize_video(
+        video: str,
+        context: Context,
+        max_height: Literal[360, 480, 720] = 720,
+    ) -> CallToolResult:
+        """Create a downloadable MP4 artifact without analyzing its content."""
+        video_id, canonical_url = normalize_video(video)
+        await context.report_progress(progress=0.0, total=1.0, message="Preparing video")
+        metadata = await _run_long_operation(
+            artifact_store.materialize(video_id, canonical_url, max_height),
+            context,
+            settings.long_operation_timeout_seconds,
+            "Video download is in progress",
+        )
+        await context.report_progress(progress=1.0, total=1.0, message="Video artifact is ready")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=f"Download {metadata.filename}: {metadata.download_url}",
+                ),
+                ResourceLink(
+                    type="resource_link",
+                    uri=metadata.download_url,
+                    name=metadata.filename,
+                    mimeType=metadata.mime_type,
+                    size=metadata.size,
+                ),
+            ],
+            structuredContent=metadata.model_dump(mode="json"),
+        )
+
+    async def download_artifact(request: Request) -> Response:
+        resolved = artifact_store.resolve(request.path_params["artifact_id"])
+        if resolved is None:
+            return Response("Artifact not found or expired.", status_code=404)
+        metadata, path = resolved
+        return FileResponse(
+            path,
+            media_type=metadata.mime_type,
+            filename=metadata.filename,
+            content_disposition_type="attachment",
+        )
+
+    mcp_app = mcp.streamable_http_app()
+
+    @asynccontextmanager
+    async def lifespan(app: Starlette):
+        cache.cleanup()
+        try:
+            async with mcp.session_manager.run():
+                yield
+        finally:
+            model_manager.unload()
+
+    application = Starlette(
+        routes=[
+            Route("/artifacts/{artifact_id}", download_artifact, methods=["GET", "HEAD"]),
+            Mount("/", app=mcp_app),
+        ],
+        lifespan=lifespan,
     )
+    application.state.mcp = mcp
+    application.state.artifact_store = artifact_store
+
+    verifier = None
+    if settings.auth_mode == "cloudflare":
+        verifier = CloudflareJWTVerifier(settings.cf_issuer, settings.cf_access_audiences)
+    application.add_middleware(CloudflareAccessMiddleware, verifier=verifier)
+    return application
+
+
+def main() -> None:
+    settings = Settings.from_env()
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

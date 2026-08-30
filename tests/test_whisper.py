@@ -1,116 +1,100 @@
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from youtube_mcp.models import WhisperSegment, WhisperTranscript
-from youtube_mcp.whisper import WhisperTranscriber
-
-_FAKE_AUDIO = "/tmp/fake_dir/audio.webm"
-_FAKE_DIR = "/tmp/fake_dir"
+from youtube_mcp.models import TranscriptionResult
+from youtube_mcp.whisper import WhisperModelManager, WhisperTranscriber
 
 
-def _make_model(text="Hello world", segments=None, language="en"):
-    if segments is None:
-        segments = [{"start": 0.0, "end": 2.5, "text": "Hello world"}]
+def _manager(tmp_path):
+    return WhisperModelManager(
+        english_model="small.en",
+        multilingual_model="small",
+        compute_type="int8",
+        cpu_threads=4,
+        idle_seconds=3600,
+        beam_size=5,
+        model_cache_dir=tmp_path,
+    )
+
+
+def test_model_routing():
+    assert WhisperModelManager._select_family(None, "auto") == "english"
+    assert WhisperModelManager._select_family("en-US", "auto") == "english"
+    assert WhisperModelManager._select_family("zh", "auto") == "multilingual"
+    assert WhisperModelManager._select_family(None, "multilingual") == "multilingual"
+
+
+def test_manager_preserves_timestamps_and_language(tmp_path):
+    manager = _manager(tmp_path)
     model = MagicMock()
-    model.transcribe.return_value = {"text": text, "segments": segments, "language": language}
-    return model
+    model.transcribe.return_value = (
+        iter([SimpleNamespace(start=0.0, end=2.5, text=" Hello world ")]),
+        SimpleNamespace(language="en", language_probability=0.99),
+    )
+    manager._model = model
+    manager._loaded_name = "small.en"
 
+    result = manager.transcribe(
+        Path("audio.webm"), None, "auto", "dQw4w9WgXcQ", "https://example.com"
+    )
+    manager.unload()
 
-def _make_transcriber(model=None):
-    t = WhisperTranscriber()
-    t._model = model or _make_model()
-    t._ffmpeg_ready = True
-    return t
-
-
-def _patch_io(mocker, returncode=0):
-    mocker.patch("tempfile.mkdtemp", return_value=_FAKE_DIR)
-    mocker.patch("subprocess.run", return_value=MagicMock(returncode=returncode))
-    mocker.patch("youtube_mcp.whisper.glob.glob", side_effect=lambda p: (
-        [_FAKE_AUDIO] if "audio.*" in p else []
-    ))
-    mocker.patch("os.remove")
-    mocker.patch("os.rmdir")
-
-
-@pytest.fixture
-def transcriber():
-    return _make_transcriber()
-
-
-def test_transcribe_happy_path(transcriber, mocker):
-    _patch_io(mocker)
-
-    result = transcriber.transcribe("dQw4w9WgXcQ")
-
-    assert isinstance(result, WhisperTranscript)
-    assert result.video_id == "dQw4w9WgXcQ"
     assert result.text == "Hello world"
-    assert len(result.segments) == 1
-    assert isinstance(result.segments[0], WhisperSegment)
-    assert result.segments[0].start == 0.0
     assert result.segments[0].end == 2.5
     assert result.language_code == "en"
+    assert result.language_probability == 0.99
+    assert result.model == "small.en"
+    assert model.transcribe.call_args.kwargs["vad_filter"] is True
 
 
-def test_transcribe_language_forwarded(mocker):
-    model = _make_model()
-    transcriber = _make_transcriber(model)
-    _patch_io(mocker)
+@pytest.mark.asyncio
+async def test_transcriber_reuses_cached_audio(tmp_path, mocker):
+    manager = MagicMock()
+    manager.transcribe.return_value = TranscriptionResult(
+        video_id="dQw4w9WgXcQ",
+        canonical_url="https://example.com",
+        text="text",
+        segments=[],
+        model="small.en",
+    )
+    downloader = MagicMock()
+    downloader.probe = MagicMock(return_value={"duration": 60, "is_live": False})
 
-    transcriber.transcribe("dQw4w9WgXcQ", language="fr")
+    async def probe(url):
+        return {"duration": 60, "is_live": False}
 
-    call_kwargs = model.transcribe.call_args[1]
-    assert call_kwargs.get("language") == "fr"
+    downloader.probe = probe
+    cache = MagicMock()
+    cache.cached_audio.return_value = tmp_path / "audio.webm"
+    transcriber = WhisperTranscriber(manager, downloader, cache, 3600)
 
+    async def run_inline(function, *arguments):
+        return function(*arguments)
 
-def test_transcribe_no_language_kwarg_when_none(mocker):
-    model = _make_model()
-    transcriber = _make_transcriber(model)
-    _patch_io(mocker)
+    mocker.patch("youtube_mcp.whisper.asyncio.to_thread", side_effect=run_inline)
 
-    transcriber.transcribe("dQw4w9WgXcQ")
+    result = await transcriber.transcribe(
+        "dQw4w9WgXcQ", "https://example.com", None, "auto"
+    )
 
-    call_kwargs = model.transcribe.call_args[1]
-    assert "language" not in call_kwargs
-
-
-def test_transcribe_ytdlp_failure_raises(transcriber, mocker):
-    _patch_io(mocker, returncode=1)
-
-    with pytest.raises(ValueError, match="Failed to download audio for: dQw4w9WgXcQ"):
-        transcriber.transcribe("dQw4w9WgXcQ")
-
-
-def test_transcribe_whisper_error_raises(mocker):
-    model = MagicMock()
-    model.transcribe.side_effect = RuntimeError("model error")
-    transcriber = _make_transcriber(model)
-    _patch_io(mocker)
-
-    with pytest.raises(ValueError, match="Transcription failed for: dQw4w9WgXcQ"):
-        transcriber.transcribe("dQw4w9WgXcQ")
+    assert result.text == "text"
+    downloader.download_audio.assert_not_called()
+    manager.transcribe.assert_called_once()
 
 
-def test_transcribe_tempfile_cleaned_up_on_success(mocker):
-    transcriber = _make_transcriber()
-    _patch_io(mocker)
-    mock_rmdir = mocker.patch("os.rmdir")
+@pytest.mark.asyncio
+async def test_transcriber_rejects_long_video():
+    downloader = MagicMock()
 
-    transcriber.transcribe("dQw4w9WgXcQ")
+    async def probe(url):
+        return {"duration": 3601, "is_live": False}
 
-    mock_rmdir.assert_called_once_with(_FAKE_DIR)
-
-
-def test_transcribe_tempfile_cleaned_up_on_failure(mocker):
-    model = MagicMock()
-    model.transcribe.side_effect = RuntimeError("boom")
-    transcriber = _make_transcriber(model)
-    _patch_io(mocker)
-    mock_rmdir = mocker.patch("os.rmdir")
-
-    with pytest.raises(ValueError):
-        transcriber.transcribe("dQw4w9WgXcQ")
-
-    mock_rmdir.assert_called_once_with(_FAKE_DIR)
+    downloader.probe = probe
+    transcriber = WhisperTranscriber(MagicMock(), downloader, MagicMock(), 3600)
+    with pytest.raises(ValueError, match="duration limit"):
+        await transcriber.transcribe(
+            "dQw4w9WgXcQ", "https://example.com", None, "auto"
+        )

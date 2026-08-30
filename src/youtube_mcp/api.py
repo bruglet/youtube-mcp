@@ -1,6 +1,46 @@
-from googleapiclient.discovery import build
+import json
+import re
 
-from .models import VideoMetadata, VideoSearchResult
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from .models import Thumbnail, VideoMetadata, VideoSearchResult, VideoStatistics
+from .video import canonical_url
+
+
+_DURATION = re.compile(
+    r"^P(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
+)
+
+
+def duration_seconds(value: str) -> float:
+    match = _DURATION.fullmatch(value)
+    if not match:
+        raise ValueError(f"YouTube returned an invalid duration: {value}")
+    parts = {key: float(number or 0) for key, number in match.groupdict().items()}
+    return parts["days"] * 86400 + parts["hours"] * 3600 + parts["minutes"] * 60 + parts["seconds"]
+
+
+def _optional_int(values: dict, key: str) -> int | None:
+    return int(values[key]) if key in values else None
+
+
+def _execute(request):
+    try:
+        return request.execute()
+    except HttpError as exc:
+        reason = "unknown error"
+        try:
+            payload = json.loads(exc.content.decode("utf-8"))
+            reason = payload["error"]["errors"][0]["reason"]
+        except (KeyError, IndexError, TypeError, ValueError, UnicodeError):
+            pass
+        status = getattr(exc.resp, "status", "unknown")
+        raise ValueError(
+            f"YouTube Data API request failed ({reason}, HTTP {status})."
+        ) from exc
 
 
 class YouTubeAPI:
@@ -8,10 +48,12 @@ class YouTubeAPI:
         self._service = build("youtube", "v3", developerKey=api_key)
 
     def get_video(self, video_id: str) -> VideoMetadata:
-        response = self._service.videos().list(
-            part="snippet,statistics,contentDetails",
-            id=video_id,
-        ).execute()
+        response = _execute(
+            self._service.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=video_id,
+            )
+        )
 
         items = response.get("items", [])
         if not items:
@@ -24,14 +66,27 @@ class YouTubeAPI:
 
         return VideoMetadata(
             id=item["id"],
+            canonical_url=canonical_url(item["id"]),
             title=snippet["title"],
             description=snippet.get("description", ""),
+            channel_id=snippet["channelId"],
             channel_title=snippet["channelTitle"],
-            view_count=int(stats.get("viewCount", 0)),
-            like_count=int(stats["likeCount"]) if "likeCount" in stats else None,
             duration=details["duration"],
+            duration_seconds=duration_seconds(details["duration"]),
             published_at=snippet["publishedAt"],
-            thumbnail_url=snippet["thumbnails"]["default"]["url"],
+            statistics=VideoStatistics(
+                view_count=_optional_int(stats, "viewCount"),
+                like_count=_optional_int(stats, "likeCount"),
+                comment_count=_optional_int(stats, "commentCount"),
+            ),
+            thumbnails={
+                name: Thumbnail(**thumbnail)
+                for name, thumbnail in snippet.get("thumbnails", {}).items()
+            },
+            tags=snippet.get("tags", []),
+            category_id=snippet.get("categoryId"),
+            caption_available=details.get("caption") == "true",
+            live_broadcast_content=snippet.get("liveBroadcastContent", "none"),
         )
 
     def search_videos(
@@ -51,7 +106,7 @@ class YouTubeAPI:
         if language:
             params["relevanceLanguage"] = language
 
-        response = self._service.search().list(**params).execute()
+        response = _execute(self._service.search().list(**params))
 
         results = []
         for item in response.get("items", []):
@@ -61,6 +116,7 @@ class YouTubeAPI:
             snippet = item["snippet"]
             results.append(VideoSearchResult(
                 video_id=video_id,
+                canonical_url=canonical_url(video_id),
                 title=snippet["title"],
                 description=snippet.get("description", ""),
                 channel_title=snippet["channelTitle"],
