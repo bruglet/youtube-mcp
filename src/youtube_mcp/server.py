@@ -24,19 +24,22 @@ from .models import (
     ArtifactMetadata,
     ChannelSearchResult,
     ChannelUploadsPage,
+    PlaylistDetailsPage,
     TranscriptionResult,
     TranscriptionToolOutput,
     TranscriptResult,
+    VideoCommentsPage,
     VideoMetadata,
     VideoSearchResult,
 )
 from .transcript import TranscriptFetcher
-from .video import normalize_video
+from .video import normalize_playlist, normalize_video
 from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
 
 
 T = TypeVar("T")
 SearchOrder = Literal["date", "rating", "relevance", "title", "viewCount"]
+CommentOrder = Literal["relevance", "time"]
 TranscriptOutput = Literal["text", "segments", "both"]
 
 READ_ANNOTATIONS = ToolAnnotations(
@@ -385,6 +388,98 @@ def create_app(settings: Settings | None = None) -> Starlette:
             youtube.get_channel_uploads,
             channel_id,
             max_results,
+            page_token,
+        )
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def get_playlist_details(
+        playlist: Annotated[
+            str,
+            Field(
+                description="A raw YouTube playlist ID or a YouTube playlist or watch "
+                "URL containing a list parameter."
+            ),
+        ],
+        max_results: Annotated[
+            int,
+            Field(
+                description="The number of ordered playlist entries to return, from 1 "
+                "through 50."
+            ),
+        ] = 25,
+        page_token: Annotated[
+            str | None,
+            Field(
+                description="The opaque next_page_token from a previous "
+                "get_playlist_details response. Omit it to start at the beginning."
+            ),
+        ] = None,
+    ) -> PlaylistDetailsPage:
+        (
+            "Return a playlist's metadata and one ordered page of video entries, "
+            "including zero-based positions, IDs, titles, dates, availability details, "
+            "thumbnails, and a pagination token. Use when the user asks what a known "
+            "playlist contains or in what order; use get_channel_uploads instead for a "
+            "channel's latest videos. Private playlists are unavailable, and deleted "
+            "or private entries can contain placeholder or limited metadata."
+        )
+        playlist_id, _ = normalize_playlist(playlist)
+        if not 1 <= max_results <= 50:
+            raise ValueError("max_results must be from 1 through 50.")
+        return await asyncio.to_thread(
+            youtube.get_playlist_details,
+            playlist_id,
+            max_results,
+            page_token,
+        )
+
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def get_video_comments(
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or a YouTube URL. "
+                "Use search_videos to find an ID when the user has not identified a video."
+            ),
+        ],
+        max_results: Annotated[
+            int,
+            Field(
+                description="The number of top-level comment threads to return, from 1 "
+                "through 100."
+            ),
+        ] = 20,
+        order: Annotated[
+            CommentOrder,
+            Field(
+                description="Use relevance for prominent reactions or time for the "
+                "newest comments first."
+            ),
+        ] = "relevance",
+        page_token: Annotated[
+            str | None,
+            Field(
+                description="The opaque next_page_token from a previous "
+                "get_video_comments response. Omit it for the first page."
+            ),
+        ] = None,
+    ) -> VideoCommentsPage:
+        (
+            "Return one page of a video's top-level comment threads with text, authors, "
+            "like counts, dates, reply counts, included replies, and a pagination token. "
+            "Use when the user asks about audience reactions or specific comments on a "
+            "known video; use get_video_details for aggregate statistics. Comments can "
+            "be disabled, YouTube does not label pinned comments in the API, and "
+            "replies_complete=false means additional replies were not included."
+        )
+        video_id, _ = normalize_video(video)
+        if not 1 <= max_results <= 100:
+            raise ValueError("max_results must be from 1 through 100.")
+        return await asyncio.to_thread(
+            youtube.get_video_comments,
+            video_id,
+            max_results,
+            order,
             page_token,
         )
 

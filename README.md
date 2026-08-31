@@ -16,11 +16,14 @@ Local speech recognition is a separate operation. It uses `yt-dlp` and `faster-w
 | `search_videos` | Search YouTube with the YouTube Data API. |
 | `search_channels` | Search for YouTube channels and return stable channel IDs. |
 | `get_channel_uploads` | Get the newest public uploads from one channel. |
+| `get_playlist_details` | Get playlist metadata and an ordered page of its videos. |
+| `get_video_comments` | Get video comment threads, like counts, and included replies. |
 | `materialize_video` | Create a downloadable MP4 artifact with a maximum height of 720p. |
 
 Tools that operate on one video accept a raw video ID or a normal YouTube video URL.
 
 Use `search_channels` to find a channel ID. Then pass that ID to `get_channel_uploads`.
+Playlist and comment responses use `next_page_token` for pagination.
 
 `get_transcript` and `transcribe` accept `output` as `text`, `segments`, or `both`. The default is `text`.
 
@@ -77,7 +80,7 @@ The server reads these environment variables at startup:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `YOUTUBE_API_KEY` | Optional | YouTube Data API v3 key for video details, search, channel search, and channel uploads. |
+| `YOUTUBE_API_KEY` | Optional | YouTube Data API v3 key for video details, search, channels, playlists, and comments. |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | Public server URL without `/mcp`. |
 | `AUTH_MODE` | `cloudflare` | Use `cloudflare` in production or `disabled` on loopback for local work. |
 | `CF_ACCESS_TEAM_DOMAIN` | Required in production | Cloudflare Access team domain. |

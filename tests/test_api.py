@@ -6,6 +6,8 @@ from youtube_mcp.api import YouTubeAPI, duration_seconds
 from youtube_mcp.models import (
     ChannelSearchResult,
     ChannelUploadsPage,
+    PlaylistDetailsPage,
+    VideoCommentsPage,
     VideoMetadata,
     VideoSearchResult,
 )
@@ -169,6 +171,93 @@ _MOCK_UPLOADS_RESPONSE = {
 }
 
 
+_MOCK_PLAYLIST_RESPONSE = {
+    "items": [
+        {
+            "id": "PL1234567890",
+            "snippet": {
+                "title": "A playlist",
+                "description": "Playlist description",
+                "channelId": "UC38IQsAvIsxxjztdMZQtwHA",
+                "channelTitle": "A channel",
+                "publishedAt": "2020-01-02T03:04:05Z",
+                "thumbnails": {
+                    "default": {"url": "https://example.com/playlist.jpg"}
+                },
+            },
+            "contentDetails": {"itemCount": 2},
+            "status": {"privacyStatus": "public"},
+        }
+    ]
+}
+
+
+_MOCK_PLAYLIST_ITEMS_RESPONSE = {
+    "nextPageToken": "NEXT_PLAYLIST_PAGE",
+    "items": [
+        {
+            "id": "PLI1",
+            "snippet": {
+                "title": "First video",
+                "description": "First description",
+                "publishedAt": "2025-01-02T03:04:05Z",
+                "position": 0,
+                "resourceId": {"videoId": "dQw4w9WgXcQ"},
+                "videoOwnerChannelId": "UC38IQsAvIsxxjztdMZQtwHA",
+                "videoOwnerChannelTitle": "A channel",
+                "thumbnails": {"default": {"url": "https://example.com/video.jpg"}},
+            },
+            "contentDetails": {
+                "videoId": "dQw4w9WgXcQ",
+                "videoPublishedAt": "2009-10-25T06:57:33Z",
+            },
+            "status": {"privacyStatus": "public"},
+        }
+    ],
+}
+
+
+_MOCK_COMMENTS_RESPONSE = {
+    "nextPageToken": "NEXT_COMMENT_PAGE",
+    "items": [
+        {
+            "id": "THREAD1",
+            "snippet": {
+                "totalReplyCount": 2,
+                "topLevelComment": {
+                    "id": "COMMENT1",
+                    "snippet": {
+                        "textDisplay": "Top comment",
+                        "authorDisplayName": "Viewer",
+                        "authorChannelId": {"value": "UCVIEWER"},
+                        "authorChannelUrl": "https://www.youtube.com/channel/UCVIEWER",
+                        "authorProfileImageUrl": "https://example.com/viewer.jpg",
+                        "likeCount": 12,
+                        "publishedAt": "2026-01-02T03:04:05Z",
+                        "updatedAt": "2026-01-02T03:04:05Z",
+                    },
+                },
+            },
+            "replies": {
+                "comments": [
+                    {
+                        "id": "REPLY1",
+                        "snippet": {
+                            "textDisplay": "A reply",
+                            "authorDisplayName": "Creator",
+                            "likeCount": 3,
+                            "publishedAt": "2026-01-02T04:00:00Z",
+                            "updatedAt": "2026-01-02T04:00:00Z",
+                            "parentId": "COMMENT1",
+                        },
+                    }
+                ]
+            },
+        }
+    ],
+}
+
+
 def test_search_videos_returns_results_and_passes_parameters(mocker):
     mock_build = mocker.patch("youtube_mcp.api.build")
     service = mock_build.return_value
@@ -256,9 +345,96 @@ def test_get_channel_uploads_channel_not_found(mocker):
         YouTubeAPI("fake-key").get_channel_uploads("missing")
 
 
+def test_get_playlist_details_returns_metadata_and_ordered_page(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.playlists.return_value.list.return_value.execute.return_value = (
+        _MOCK_PLAYLIST_RESPONSE
+    )
+    service.playlistItems.return_value.list.return_value.execute.return_value = (
+        _MOCK_PLAYLIST_ITEMS_RESPONSE
+    )
+
+    page = YouTubeAPI("fake-key").get_playlist_details(
+        "PL1234567890", max_results=5, page_token="PAGE_TOKEN"
+    )
+
+    assert isinstance(page, PlaylistDetailsPage)
+    assert page.title == "A playlist"
+    assert page.item_count == 2
+    assert page.next_page_token == "NEXT_PLAYLIST_PAGE"
+    assert page.videos[0].position == 0
+    assert page.videos[0].video_id == "dQw4w9WgXcQ"
+    service.playlists.return_value.list.assert_called_once_with(
+        part="snippet,contentDetails,status", id="PL1234567890"
+    )
+    service.playlistItems.return_value.list.assert_called_once_with(
+        part="snippet,contentDetails,status",
+        playlistId="PL1234567890",
+        maxResults=5,
+        pageToken="PAGE_TOKEN",
+    )
+
+
+def test_get_playlist_details_not_found(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.playlists.return_value.list.return_value.execute.return_value = {"items": []}
+
+    with pytest.raises(ValueError, match="Playlist not found or unavailable"):
+        YouTubeAPI("fake-key").get_playlist_details("PL1234567890")
+
+
+def test_get_video_comments_returns_threads_and_partial_replies(mocker):
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.commentThreads.return_value.list.return_value.execute.return_value = (
+        _MOCK_COMMENTS_RESPONSE
+    )
+
+    page = YouTubeAPI("fake-key").get_video_comments(
+        "dQw4w9WgXcQ", max_results=10, order="time", page_token="PAGE_TOKEN"
+    )
+
+    assert isinstance(page, VideoCommentsPage)
+    assert page.next_page_token == "NEXT_COMMENT_PAGE"
+    assert page.comments[0].top_level_comment.text == "Top comment"
+    assert page.comments[0].top_level_comment.like_count == 12
+    assert page.comments[0].replies[0].parent_id == "COMMENT1"
+    assert page.comments[0].replies_complete is False
+    service.commentThreads.return_value.list.assert_called_once_with(
+        part="snippet,replies",
+        videoId="dQw4w9WgXcQ",
+        maxResults=10,
+        order="time",
+        textFormat="plainText",
+        pageToken="PAGE_TOKEN",
+    )
+
+
+def test_get_video_comments_reports_disabled_comments(mocker):
+    error = HttpError(
+        Response({"status": "403"}),
+        b'{"error":{"errors":[{"reason":"commentsDisabled"}]}}',
+    )
+    mock_build = mocker.patch("youtube_mcp.api.build")
+    service = mock_build.return_value
+    service.commentThreads.return_value.list.return_value.execute.side_effect = error
+
+    with pytest.raises(ValueError, match="commentsDisabled, HTTP 403"):
+        YouTubeAPI("fake-key").get_video_comments("dQw4w9WgXcQ")
+
+
 @pytest.mark.parametrize(
     "method",
-    ["get_video", "search_videos", "search_channels", "get_channel_uploads"],
+    [
+        "get_video",
+        "search_videos",
+        "search_channels",
+        "get_channel_uploads",
+        "get_playlist_details",
+        "get_video_comments",
+    ],
 )
 def test_data_api_methods_require_api_key(method):
     with pytest.raises(ValueError, match="Set YOUTUBE_API_KEY"):

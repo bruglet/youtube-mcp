@@ -32,7 +32,7 @@ def _settings(tmp_path: Path, auth_mode: str = "disabled") -> Settings:
     )
 
 
-def test_registers_exactly_seven_tools(tmp_path):
+def test_registers_exactly_nine_tools(tmp_path):
     app = create_app(_settings(tmp_path))
     tools = asyncio.run(app.state.mcp.list_tools())
     assert {tool.name for tool in tools} == {
@@ -42,6 +42,8 @@ def test_registers_exactly_seven_tools(tmp_path):
         "search_videos",
         "search_channels",
         "get_channel_uploads",
+        "get_playlist_details",
+        "get_video_comments",
         "materialize_video",
     }
 
@@ -57,6 +59,8 @@ def test_tool_annotations(tmp_path):
         "search_videos",
         "search_channels",
         "get_channel_uploads",
+        "get_playlist_details",
+        "get_video_comments",
     ):
         annotations = tools[name].annotations
         assert annotations.readOnlyHint is True
@@ -86,11 +90,19 @@ def test_tool_descriptions_guide_youtube_workflows(tmp_path):
     assert "get_channel_uploads" in tools["search_channels"].description
     assert "search_channels" in tools["get_channel_uploads"].description
     assert "search_videos" in tools["get_channel_uploads"].description
+    assert "get_channel_uploads" in tools["get_playlist_details"].description
+    assert "pinned" in tools["get_video_comments"].description
+    assert "replies_complete" in tools["get_video_comments"].description
 
     channel_id = tools["get_channel_uploads"].inputSchema["properties"]["channel_id"]
     page_token = tools["get_channel_uploads"].inputSchema["properties"]["page_token"]
     assert "search_channels" in channel_id["description"]
     assert "next_page_token" in page_token["description"]
+
+    playlist_token = tools["get_playlist_details"].inputSchema["properties"]["page_token"]
+    comment_token = tools["get_video_comments"].inputSchema["properties"]["page_token"]
+    assert "next_page_token" in playlist_token["description"]
+    assert "next_page_token" in comment_token["description"]
 
 
 @pytest.mark.parametrize(
@@ -146,6 +158,8 @@ def test_all_tools_expose_output_schemas(tmp_path):
     assert "result" in tools["search_videos"].outputSchema["properties"]
     assert "result" in tools["search_channels"].outputSchema["properties"]
     assert tools["get_channel_uploads"].outputSchema["title"] == "ChannelUploadsPage"
+    assert tools["get_playlist_details"].outputSchema["title"] == "PlaylistDetailsPage"
+    assert tools["get_video_comments"].outputSchema["title"] == "VideoCommentsPage"
     assert tools["materialize_video"].outputSchema["title"] == "ArtifactMetadata"
 
     transcript_schema = tools["get_transcript"].outputSchema

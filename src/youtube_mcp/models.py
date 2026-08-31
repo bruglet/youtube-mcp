@@ -85,6 +85,64 @@ class ChannelUploadsPage(BaseModel):
     next_page_token: str | None = None
 
 
+class PlaylistVideo(BaseModel):
+    playlist_item_id: str
+    position: int
+    video_id: str
+    canonical_url: str
+    title: str
+    description: str
+    channel_id: str | None = None
+    channel_title: str | None = None
+    added_at: str
+    published_at: str | None = None
+    privacy_status: str | None = None
+    thumbnail_url: str | None = None
+
+
+class PlaylistDetailsPage(BaseModel):
+    playlist_id: str
+    playlist_url: str
+    title: str
+    description: str
+    channel_id: str
+    channel_title: str
+    published_at: str
+    item_count: int
+    privacy_status: str
+    thumbnails: dict[str, Thumbnail]
+    videos: list[PlaylistVideo]
+    next_page_token: str | None = None
+
+
+class Comment(BaseModel):
+    comment_id: str
+    text: str
+    author_display_name: str
+    author_channel_id: str | None = None
+    author_channel_url: str | None = None
+    author_profile_image_url: str | None = None
+    like_count: int
+    published_at: str
+    updated_at: str
+    parent_id: str | None = None
+
+
+class CommentThread(BaseModel):
+    thread_id: str
+    top_level_comment: Comment
+    total_reply_count: int
+    replies: list[Comment]
+    replies_complete: bool
+
+
+class VideoCommentsPage(BaseModel):
+    video_id: str
+    canonical_url: str
+    comments: list[CommentThread]
+    next_page_token: str | None = None
+
+
 class WhisperSegment(BaseModel):
     start: float
     end: float

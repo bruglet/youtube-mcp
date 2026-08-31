@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_PLAYLIST_ID = re.compile(r"^[A-Za-z0-9_-]{2,200}$")
 
 
 def normalize_video(value: str) -> tuple[str, str]:
@@ -36,3 +37,28 @@ def normalize_video(value: str) -> tuple[str, str]:
 
 def canonical_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def normalize_playlist(value: str) -> tuple[str, str]:
+    """Return a playlist ID and its canonical URL."""
+    value = value.strip()
+    if _PLAYLIST_ID.fullmatch(value):
+        return value, playlist_url(value)
+
+    parsed = urlparse(value if "://" in value else f"https://{value}")
+    host = (parsed.hostname or "").lower()
+    if not (
+        host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtu.be"
+    ):
+        raise ValueError("Enter a valid YouTube playlist ID or playlist URL.")
+
+    playlist_id = parse_qs(parsed.query).get("list", [None])[0]
+    if not playlist_id or not _PLAYLIST_ID.fullmatch(playlist_id):
+        raise ValueError("Enter a valid YouTube playlist ID or playlist URL.")
+    return playlist_id, playlist_url(playlist_id)
+
+
+def playlist_url(playlist_id: str) -> str:
+    return f"https://www.youtube.com/playlist?list={playlist_id}"
