@@ -46,6 +46,15 @@ def test_valid_access_assertion(keys):
     assert claims["sub"] == "user"
 
 
+def test_service_token_access_assertion(keys):
+    private, public = keys
+    claims = _verifier(public).verify(
+        _token(private, sub="", common_name="service-token.access")
+    )
+    assert claims["sub"] == ""
+    assert claims["common_name"] == "service-token.access"
+
+
 def test_rejects_wrong_audience_and_expiry(keys):
     private, public = keys
     verifier = _verifier(public)
