@@ -101,8 +101,14 @@ def test_tool_descriptions_guide_youtube_workflows(tmp_path):
 
     playlist_token = tools["get_playlist_details"].inputSchema["properties"]["page_token"]
     comment_token = tools["get_video_comments"].inputSchema["properties"]["page_token"]
+    duration_override = tools["materialize_video"].inputSchema["properties"][
+        "override_duration_limit"
+    ]
     assert "next_page_token" in playlist_token["description"]
     assert "next_page_token" in comment_token["description"]
+    assert duration_override["default"] is False
+    assert "explicit confirmation" in duration_override["description"]
+    assert "explicit confirmation" in tools["materialize_video"].description
 
 
 @pytest.mark.parametrize(
@@ -267,3 +273,9 @@ async def test_materialize_returns_resource_link_and_progress(tmp_path):
     assert '"progressToken":"test"' in response.text
     assert "https://mcp.example.com/artifacts/example" in response.text
     assert '"cached":false' in response.text
+    app.state.artifact_store.materialize.assert_awaited_once_with(
+        "dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        720,
+        False,
+    )

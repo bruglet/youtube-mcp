@@ -500,17 +500,34 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "requests a smaller download; source quality can reduce the actual height."
             ),
         ] = 720,
+        override_duration_limit: Annotated[
+            bool,
+            Field(
+                description="Set true only after warning the user that the download may be "
+                "large or slow and obtaining their explicit confirmation to bypass the "
+                "configured duration limit. This does not bypass size, timeout, or live-video "
+                "restrictions."
+            ),
+        ] = False,
     ) -> Annotated[CallToolResult, ArtifactMetadata]:
         (
             "Return a temporary authenticated MP4 download link and file metadata. "
             "Use when the user asks to download or obtain the video file; do not use "
             "for metadata, captions, or speech transcription, and do not imply that "
-            "the video was analyzed. Large, overlong, or live videos can be rejected."
+            "the video was analyzed. Overlong videos are rejected by default; always warn "
+            "the user about a potentially large or slow download and obtain explicit "
+            "confirmation before setting override_duration_limit=true. Size, timeout, and "
+            "live-video restrictions still apply."
         )
         video_id, canonical_url = normalize_video(video)
         await context.report_progress(progress=0.0, total=1.0, message="Preparing video")
         metadata = await _run_long_operation(
-            artifact_store.materialize(video_id, canonical_url, max_height),
+            artifact_store.materialize(
+                video_id,
+                canonical_url,
+                max_height,
+                override_duration_limit,
+            ),
             context,
             settings.long_operation_timeout_seconds,
             "Video download is in progress",

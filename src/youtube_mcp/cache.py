@@ -127,6 +127,7 @@ class ArtifactStore:
         video_id: str,
         canonical_url: str,
         max_height: int,
+        override_duration_limit: bool = False,
     ) -> ArtifactMetadata:
         artifact_id = self._cache.key(f"video:{video_id}:{max_height}")
         cached = self.resolve(artifact_id)
@@ -137,7 +138,7 @@ class ArtifactStore:
         duration = float(info.get("duration") or 0)
         if not duration:
             raise ValueError("The video duration is not available.")
-        if duration > self._max_duration_seconds:
+        if duration > self._max_duration_seconds and not override_duration_limit:
             raise ValueError("The video is longer than the configured duration limit.")
         if info.get("is_live"):
             raise ValueError("Live video materialization is not supported.")

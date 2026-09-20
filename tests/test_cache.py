@@ -9,8 +9,10 @@ from youtube_mcp.models import TranscriptionResult, WhisperSegment
 
 
 class FakeDownloader:
+    duration = 120
+
     async def probe(self, url):
-        return {"duration": 120, "is_live": False, "title": "A test video"}
+        return {"duration": self.duration, "is_live": False, "title": "A test video"}
 
     async def download_video(self, url, output_template, max_height, max_bytes):
         path = output_template.with_name("video.mp4")
@@ -55,6 +57,35 @@ async def test_artifact_survives_store_recreation(tmp_path):
     )
     assert reused.cached is True
     assert datetime.fromisoformat(metadata.expires_at) > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_materialize_requires_explicit_duration_override(tmp_path):
+    cache = MediaCache(tmp_path, ttl_seconds=3600, max_bytes=1024)
+    downloader = FakeDownloader()
+    downloader.duration = 3601
+    store = ArtifactStore(
+        cache,
+        downloader,
+        "https://mcp.example.com",
+        ttl_seconds=3600,
+        max_artifact_bytes=512,
+        max_duration_seconds=3600,
+    )
+
+    with pytest.raises(ValueError, match="duration limit"):
+        await store.materialize(
+            "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", 720
+        )
+
+    result = await store.materialize(
+        "dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        720,
+        override_duration_limit=True,
+    )
+
+    assert result.filename == "A-test-video.mp4"
 
 
 def test_transcription_result_survives_cache_recreation(tmp_path):
