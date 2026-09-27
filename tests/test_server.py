@@ -32,7 +32,7 @@ def _settings(tmp_path: Path, auth_mode: str = "disabled") -> Settings:
     )
 
 
-def test_registers_exactly_nine_tools(tmp_path):
+def test_registers_exactly_ten_tools(tmp_path):
     app = create_app(_settings(tmp_path))
     tools = asyncio.run(app.state.mcp.list_tools())
     assert {tool.name for tool in tools} == {
@@ -44,6 +44,7 @@ def test_registers_exactly_nine_tools(tmp_path):
         "get_channel_uploads",
         "get_playlist_details",
         "get_video_comments",
+        "get_video_formats",
         "materialize_video",
     }
 
@@ -61,6 +62,7 @@ def test_tool_annotations(tmp_path):
         "get_channel_uploads",
         "get_playlist_details",
         "get_video_comments",
+        "get_video_formats",
     ):
         annotations = tools[name].annotations
         assert annotations.readOnlyHint is True
@@ -109,6 +111,12 @@ def test_tool_descriptions_guide_youtube_workflows(tmp_path):
     assert duration_override["default"] is False
     assert "explicit confirmation" in duration_override["description"]
     assert "explicit confirmation" in tools["materialize_video"].description
+    assert "materialize_video" in tools["get_video_formats"].description
+    assert "get_video_formats" in tools["materialize_video"].description
+    assert tools["materialize_video"].inputSchema["properties"]["max_height"]["default"] == 720
+    assert tools["materialize_video"].inputSchema["properties"]["dynamic_range"]["default"] == "auto"
+    assert "get_video_formats.caption_tracks" in tools["materialize_video"].inputSchema["properties"]["caption_language"]["description"]
+    assert "automatic translations" in tools["materialize_video"].description
 
 
 @pytest.mark.parametrize(
@@ -166,6 +174,7 @@ def test_all_tools_expose_output_schemas(tmp_path):
     assert tools["get_channel_uploads"].outputSchema["title"] == "ChannelUploadsPage"
     assert tools["get_playlist_details"].outputSchema["title"] == "PlaylistDetailsPage"
     assert tools["get_video_comments"].outputSchema["title"] == "VideoCommentsPage"
+    assert tools["get_video_formats"].outputSchema["title"] == "VideoFormatsResult"
     assert tools["materialize_video"].outputSchema["title"] == "ArtifactMetadata"
 
     transcript_schema = tools["get_transcript"].outputSchema
@@ -278,4 +287,7 @@ async def test_materialize_returns_resource_link_and_progress(tmp_path):
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         720,
         False,
+        None,
+        "auto",
+        None,
     )

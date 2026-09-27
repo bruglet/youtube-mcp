@@ -19,7 +19,7 @@ from .api import YouTubeAPI
 from .auth import CloudflareAccessMiddleware, CloudflareJWTVerifier
 from .cache import ArtifactStore, MediaCache
 from .config import Settings
-from .downloader import YtDlpRunner
+from .downloader import YtDlpRunner, video_formats
 from .models import (
     ArtifactMetadata,
     ChannelSearchResult,
@@ -29,6 +29,7 @@ from .models import (
     TranscriptionToolOutput,
     TranscriptResult,
     VideoCommentsPage,
+    VideoFormatsResult,
     VideoMetadata,
     VideoSearchResult,
 )
@@ -483,6 +484,30 @@ def create_app(settings: Settings | None = None) -> Starlette:
             page_token,
         )
 
+    @mcp.tool(annotations=READ_ANNOTATIONS)
+    async def get_video_formats(
+        video: Annotated[
+            str,
+            Field(
+                description="A raw 11-character YouTube video ID or URL. Use search_videos "
+                "to find an ID if the user has not identified the video."
+            ),
+        ],
+    ) -> VideoFormatsResult:
+        (
+            "Return up to 25 of the highest available combinations of video height, "
+            "frame rate, dynamic range, and codecs, plus available audio codecs and "
+            "source caption languages. Use when the user asks what qualities or caption "
+            "languages exist or needs precise options for "
+            "materialize_video; call materialize_video directly for routine downloads. "
+            "Codec choices are informational because materialize_video selects them "
+            "automatically; automatic translations are excluded, availability can change, "
+            "and artifact size limits still apply."
+        )
+        video_id, canonical_url = normalize_video(video)
+        info = await downloader.probe(canonical_url)
+        return video_formats(video_id, canonical_url, info)
+
     @mcp.tool(annotations=WRITE_ANNOTATIONS)
     async def materialize_video(
         video: Annotated[
@@ -494,10 +519,13 @@ def create_app(settings: Settings | None = None) -> Starlette:
         ],
         context: Context,
         max_height: Annotated[
-            Literal[360, 480, 720],
+            int,
             Field(
-                description="The maximum MP4 height in pixels. Use 720 unless the user "
-                "requests a smaller download; source quality can reduce the actual height."
+                ge=144,
+                le=4320,
+                description="Maximum video height in pixels, such as 1080 or 2160 for 4K. "
+                "Default to 720 unless the user asks for another resolution. The actual "
+                "height may be lower; use get_video_formats if an exact quality matters."
             ),
         ] = 720,
         override_duration_limit: Annotated[
@@ -509,15 +537,47 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "restrictions."
             ),
         ] = False,
+        max_fps: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                le=240,
+                description="Optional frame rate ceiling, such as 30 or 60. The selected "
+                "format may have a lower frame rate; use get_video_formats to check "
+                "available combinations before requesting a specific one."
+            ),
+        ] = None,
+        dynamic_range: Annotated[
+            Literal["auto", "sdr", "hdr"],
+            Field(
+                description="Use auto for normal downloads, hdr to require an HDR track, "
+                "or sdr to require SDR. Call get_video_formats first if availability is "
+                "unclear; a missing requested range causes the download to fail."
+            ),
+        ] = "auto",
+        caption_language: Annotated[
+            str | None,
+            Field(
+                min_length=2,
+                max_length=35,
+                description="Optional caption language code, such as en or zh-Hans, from "
+                "get_video_formats.caption_tracks. Omit to embed every available source "
+                "language, with manual captions preferred over automatic captions. "
+                "If no matching track exists, the video has no embedded captions."
+            ),
+        ] = None,
     ) -> Annotated[CallToolResult, ArtifactMetadata]:
         (
-            "Return a temporary authenticated MP4 download link and file metadata. "
-            "Use when the user asks to download or obtain the video file; do not use "
-            "for metadata, captions, or speech transcription, and do not imply that "
-            "the video was analyzed. Overlong videos are rejected by default; always warn "
-            "the user about a potentially large or slow download and obtain explicit "
-            "confirmation before setting override_duration_limit=true. Size, timeout, and "
-            "live-video restrictions still apply."
+            "Return a temporary authenticated video download link and file metadata "
+            "when the user asks for the video file; use other tools for metadata, "
+            "captions, or transcription. A plain call creates an MP4 up to 720p; higher "
+            "resolution or frame rate or dynamic range controls create MKV, and "
+            "get_video_formats lists available quality and caption languages. The file "
+            "includes original captions as selectable tracks by default, excluding "
+            "automatic translations; caption_language selects one, and no video analysis "
+            "occurs. Size, timeout, and live-video restrictions apply; always warn about "
+            "potentially large or slow downloads and obtain explicit confirmation before "
+            "setting override_duration_limit=true."
         )
         video_id, canonical_url = normalize_video(video)
         await context.report_progress(progress=0.0, total=1.0, message="Preparing video")
@@ -527,6 +587,9 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 canonical_url,
                 max_height,
                 override_duration_limit,
+                max_fps,
+                dynamic_range,
+                caption_language,
             ),
             context,
             settings.long_operation_timeout_seconds,

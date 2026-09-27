@@ -18,7 +18,8 @@ Local speech recognition is a separate operation. It uses `yt-dlp` and `faster-w
 | `get_channel_uploads` | Get the newest public uploads from one channel. |
 | `get_playlist_details` | Get playlist metadata and an ordered page of its videos. |
 | `get_video_comments` | Get video comment threads, like counts, and included replies. |
-| `materialize_video` | Create a downloadable MP4 artifact with a maximum height of 720p. |
+| `get_video_formats` | List the available video heights, frame rates, dynamic ranges, and codecs. |
+| `materialize_video` | Create a downloadable video file. The default is MP4 with a maximum height of 720p. |
 
 Tools that operate on one video accept a raw video ID or a normal YouTube video URL.
 
@@ -30,6 +31,18 @@ Playlist and comment responses use `next_page_token` for pagination.
 `get_transcript` never calls Whisper. If no matching caption track exists, the tool returns `available: false`.
 
 `materialize_video` creates a user download. It does not send the video to Whisper or ask the client to analyze it.
+
+The download is one file. The server embeds available creator captions and original automatic captions as selectable tracks. It does not add YouTube's automatic translations. When a manual and an automatic track have the same language code, it selects the manual track.
+
+Set `caption_language` to one code from `get_video_formats.caption_tracks` to embed one language. If no track matches, the video has no captions. Leave this option unset to embed all source languages. Captions are not burned into the picture.
+
+For a normal download, call `materialize_video` with only the video ID or URL. The tool selects an MP4 at 720p or less.
+
+Set `max_height` to a height such as `1080` or `2160` for a larger download. You can also set `max_fps` to a frame rate such as `30` or `60`. Set `dynamic_range` to `hdr` or `sdr` to require that range. Downloads above 720p or with frame rate or dynamic range controls use MKV. The server keeps the selected codecs without transcoding.
+
+The height and frame rate values are ceilings. The selected track can have a lower value. Call `get_video_formats` when the user asks which qualities are available or needs a specific combination. This tool returns a compact list and does not download the video.
+
+At the same quality, yt-dlp prefers AV1, VP9, HEVC, then H.264 for video. It prefers Opus to AAC for audio. A requested HDR or SDR track must exist. The usual duration, file size, and timeout limits still apply.
 
 ## Requirements
 

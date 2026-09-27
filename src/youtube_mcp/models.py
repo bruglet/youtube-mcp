@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -179,7 +181,30 @@ class ArtifactMetadata(BaseModel):
     mime_type: str = "video/mp4"
     size: int
     max_height: int
+    max_fps: int | None = None
+    dynamic_range: str = "auto"
     download_url: str
     created_at: str
     expires_at: str
     cached: bool = False
+
+
+class CaptionOption(BaseModel):
+    language_code: str
+    source: Literal["manual", "automatic"]
+
+
+class VideoFormatOption(BaseModel):
+    height: int
+    fps: float | None = None
+    dynamic_range: str
+    video_codecs: list[str]
+
+
+class VideoFormatsResult(BaseModel):
+    video_id: str
+    canonical_url: str
+    options: list[VideoFormatOption]
+    audio_codecs: list[str]
+    caption_tracks: list[CaptionOption] = Field(default_factory=list)
+    truncated: bool = False

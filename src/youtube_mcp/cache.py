@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from .downloader import YtDlpRunner, remove_directory
+from .downloader import YtDlpRunner, remove_directory, source_caption_tracks
 from .models import ArtifactMetadata, TranscriptionResult
 
 
@@ -128,8 +128,16 @@ class ArtifactStore:
         canonical_url: str,
         max_height: int,
         override_duration_limit: bool = False,
+        max_fps: int | None = None,
+        dynamic_range: str = "auto",
+        caption_language: str | None = None,
     ) -> ArtifactMetadata:
-        artifact_id = self._cache.key(f"video:{video_id}:{max_height}")
+        advanced = max_height > 720 or max_fps is not None or dynamic_range != "auto"
+        caption_language = caption_language.strip().lower() if caption_language else None
+        key = f"video:captions1:{video_id}:{max_height}:lang={caption_language or 'all'}"
+        if advanced:
+            key += f":fps={max_fps}:range={dynamic_range}"
+        artifact_id = self._cache.key(key)
         cached = self.resolve(artifact_id)
         if cached:
             return cached[0].model_copy(update={"cached": True})
@@ -142,6 +150,7 @@ class ArtifactStore:
             raise ValueError("The video is longer than the configured duration limit.")
         if info.get("is_live"):
             raise ValueError("Live video materialization is not supported.")
+        caption_tracks = source_caption_tracks(info, caption_language)
 
         work_dir = self._cache.make_work_dir()
         try:
@@ -150,10 +159,13 @@ class ArtifactStore:
                 work_dir / "video.%(ext)s",
                 max_height,
                 self._max_artifact_bytes,
+                max_fps,
+                dynamic_range,
+                caption_tracks,
             )
             if source.stat().st_size > self._cache.max_bytes:
                 raise ValueError("The downloaded video is larger than the total cache limit.")
-            destination = self._cache.artifact_dir / f"{artifact_id}.mp4"
+            destination = self._cache.artifact_dir / f"{artifact_id}{source.suffix.lower()}"
             os.replace(source, destination)
             now = _utc_now()
             title = _safe_filename(str(info.get("title") or video_id))
@@ -161,9 +173,12 @@ class ArtifactStore:
                 artifact_id=artifact_id,
                 video_id=video_id,
                 canonical_url=canonical_url,
-                filename=f"{title}.mp4",
+                filename=f"{title}{source.suffix.lower()}",
+                mime_type="video/x-matroska" if advanced else "video/mp4",
                 size=destination.stat().st_size,
                 max_height=max_height,
+                max_fps=max_fps,
+                dynamic_range=dynamic_range,
                 download_url=f"{self._public_base_url}/artifacts/{artifact_id}",
                 created_at=now.isoformat(),
                 expires_at=(now + timedelta(seconds=self._ttl_seconds)).isoformat(),
@@ -179,15 +194,17 @@ class ArtifactStore:
     def resolve(self, artifact_id: str) -> tuple[ArtifactMetadata, Path] | None:
         if not re.fullmatch(r"[a-f0-9]{64}", artifact_id):
             return None
-        media_path = self._cache.artifact_dir / f"{artifact_id}.mp4"
         metadata_path = self._metadata_path(artifact_id)
-        if not media_path.is_file() or not metadata_path.is_file():
+        if not metadata_path.is_file():
             return None
         try:
             metadata = ArtifactMetadata.model_validate_json(metadata_path.read_text("utf-8"))
+            suffix = ".mkv" if metadata.mime_type == "video/x-matroska" else ".mp4"
+            media_path = self._cache.artifact_dir / f"{artifact_id}{suffix}"
+            if not media_path.is_file():
+                return None
             expires_at = datetime.fromisoformat(metadata.expires_at)
         except (ValueError, OSError):
-            media_path.unlink(missing_ok=True)
             metadata_path.unlink(missing_ok=True)
             return None
         if expires_at <= _utc_now():

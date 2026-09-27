@@ -1,9 +1,13 @@
 import asyncio
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from .models import CaptionOption, VideoFormatOption, VideoFormatsResult
 
 
 class YtDlpError(ValueError):
@@ -41,25 +45,50 @@ class YtDlpRunner:
         output_template: Path,
         max_height: int,
         max_bytes: int,
+        max_fps: int | None = None,
+        dynamic_range: str = "auto",
+        caption_tracks: list[CaptionOption] | None = None,
     ) -> Path:
+        advanced = max_height > 720 or max_fps is not None or dynamic_range != "auto"
+        video_filter = f"[height<={max_height}]"
+        if max_fps is not None:
+            video_filter += f"[fps<={max_fps}]"
+        if dynamic_range == "hdr":
+            video_filter += "[dynamic_range!=SDR]"
+        elif dynamic_range == "sdr":
+            video_filter += "[dynamic_range=SDR]"
+        container = "mkv" if advanced else "mp4"
+        subtitle_args = []
+        if caption_tracks:
+            subtitle_args = [
+                "--extractor-args", "youtube:skip=translated_subs",
+                "--sub-langs", ",".join(f"^{re.escape(track.language_code)}$" for track in caption_tracks),
+                "--sub-format", "vtt",
+                "--embed-subs",
+            ]
+            if any(track.source == "manual" for track in caption_tracks):
+                subtitle_args.append("--write-subs")
+            if any(track.source == "automatic" for track in caption_tracks):
+                subtitle_args.append("--write-auto-subs")
         await self._run(
             "--no-playlist",
             "--no-overwrites",
             "--format",
-            f"bv*[height<={max_height}]+ba/b[height<={max_height}]",
+            f"bv*{video_filter}+ba/b{video_filter}",
+            "--format-sort",
+            "res,fps,hdr:12,vcodec,acodec",
             "--merge-output-format",
-            "mp4",
+            container,
             "--remux-video",
-            "mp4",
+            container,
             "--max-filesize",
             str(max_bytes),
             "--output",
             str(output_template),
+            *subtitle_args,
             url,
         )
-        path = self._find_output(output_template)
-        if path.suffix.lower() != ".mp4":
-            raise YtDlpError("yt-dlp could not make an MP4 artifact for this video.")
+        path = self._find_output(output_template, f".{container}")
         if path.stat().st_size > max_bytes:
             path.unlink(missing_ok=True)
             raise YtDlpError("The downloaded video is larger than the artifact size limit.")
@@ -104,16 +133,114 @@ class YtDlpRunner:
             await process.wait()
 
     @staticmethod
-    def _find_output(template: Path) -> Path:
+    def _find_output(template: Path, suffix: str | None = None) -> Path:
         prefix = template.name.split("%", 1)[0]
         matches = [
             path
             for path in template.parent.glob(f"{prefix}*")
-            if path.is_file() and not path.name.endswith((".part", ".ytdl"))
+            if path.is_file()
+            and not path.name.endswith((".part", ".ytdl"))
+            and (suffix is None or path.suffix.lower() == suffix)
         ]
         if not matches:
             raise YtDlpError("yt-dlp completed without creating a media file.")
         return max(matches, key=lambda path: path.stat().st_size)
+
+
+def video_formats(video_id: str, canonical_url: str, info: dict[str, Any]) -> VideoFormatsResult:
+    groups: dict[tuple[int, float | None, str], set[str]] = {}
+    audio_codecs: set[str] = set()
+    for item in info.get("formats") or []:
+        vcodec = str(item.get("vcodec") or "none")
+        acodec = str(item.get("acodec") or "none")
+        if vcodec == "none":
+            if acodec != "none":
+                audio_codecs.add(_codec_name(acodec))
+            continue
+        height = item.get("height")
+        if not isinstance(height, (int, float)) or height <= 0:
+            continue
+        fps = item.get("fps")
+        fps = round(float(fps), 2) if isinstance(fps, (int, float)) else None
+        key = (int(height), fps, str(item.get("dynamic_range") or "unknown"))
+        groups.setdefault(key, set()).add(_codec_name(vcodec))
+    ordered = sorted(groups, key=lambda key: (key[0], key[1] or 0, key[2]), reverse=True)
+    return VideoFormatsResult(
+        video_id=video_id,
+        canonical_url=canonical_url,
+        options=[
+            VideoFormatOption(
+                height=height,
+                fps=fps,
+                dynamic_range=dynamic_range,
+                video_codecs=sorted(groups[(height, fps, dynamic_range)], key=_codec_order),
+            )
+            for height, fps, dynamic_range in ordered[:25]
+        ],
+        audio_codecs=sorted(audio_codecs, key=_codec_order),
+        caption_tracks=source_caption_tracks(info),
+        truncated=len(ordered) > 25,
+    )
+
+
+def source_caption_tracks(
+    info: dict[str, Any], requested_language: str | None = None
+) -> list[CaptionOption]:
+    tracks = {
+        code: CaptionOption(language_code=code, source="manual")
+        for code, formats in (info.get("subtitles") or {}).items()
+        if formats and code != "live_chat"
+    }
+    for code, formats in (info.get("automatic_captions") or {}).items():
+        if code in tracks or code.endswith("-orig") or not formats:
+            continue
+        entry = next((item for item in formats if item.get("url")), None)
+        if entry is None or "tlang" in parse_qs(urlsplit(entry["url"]).query):
+            continue
+        if " from " in str(entry.get("name") or ""):
+            continue
+        tracks[code] = CaptionOption(language_code=code, source="automatic")
+
+    if requested_language is None:
+        return sorted(tracks.values(), key=lambda track: track.language_code)
+
+    requested = requested_language.strip().lower()
+    candidates = [
+        track for track in tracks.values()
+        if track.language_code.lower() == requested
+        or track.language_code.lower().startswith(f"{requested}-")
+        or requested.startswith(f"{track.language_code.lower()}-")
+    ]
+    if not candidates:
+        return []
+    candidates.sort(key=lambda track: (
+        track.language_code.lower() != requested,
+        track.source != "manual",
+        track.language_code.lower() != "en-us" if requested == "en" else False,
+        track.language_code,
+    ))
+    return candidates[:1]
+
+
+def _codec_name(value: str) -> str:
+    if value.startswith("av01"):
+        return "AV1"
+    if value.startswith("vp9"):
+        return "VP9"
+    if value.startswith(("hev1", "hvc1", "h265")):
+        return "HEVC"
+    if value.startswith(("avc1", "h264")):
+        return "H.264"
+    if value.startswith("mp4a"):
+        return "AAC"
+    if value.startswith("opus"):
+        return "Opus"
+    return value
+
+
+def _codec_order(value: str) -> tuple[int, str]:
+    order = {"AV1": 0, "VP9": 1, "HEVC": 2, "H.264": 3, "Opus": 0, "AAC": 1}
+    return order.get(value, 10), value
 
 
 def remove_directory(path: Path) -> None:
