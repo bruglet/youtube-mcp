@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Literal, TypeVar
@@ -39,6 +40,7 @@ from .whisper import ModelChoice, WhisperModelManager, WhisperTranscriber
 
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 SearchOrder = Literal["date", "rating", "relevance", "title", "viewCount"]
 CommentOrder = Literal["relevance", "time"]
 TranscriptOutput = Literal["text", "segments", "both"]
@@ -565,16 +567,29 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "translations are excluded, and unavailable languages add no track."
             ),
         ] = None,
+        expires_in_seconds: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description="Lifetime of the downloadable video in seconds from creation. "
+                "Omit for the configured cache lifetime (24 hours by default); set this "
+                "when the user requests another expiry, such as 3600 for one hour. "
+                "A cached result keeps its original expiry, and the cache size limit "
+                "may evict it earlier."
+            ),
+        ] = None,
     ) -> Annotated[CallToolResult, ArtifactMetadata]:
         (
-            "Return a temporary authenticated video download link and file metadata "
-            "when the user asks for the video file; use other tools for metadata, "
+            "Return a temporary authenticated video download link, file metadata, and "
+            "expiry time when the user asks for the video file; use other tools for metadata, "
             "captions, or transcription. A plain call creates an MP4 up to 720p; higher "
             "resolution or frame rate or dynamic range controls create MKV, and "
             "get_video_formats lists available quality and caption languages. The file "
             "includes one English caption track by default; caption_language selects "
             "specific source tracks, all tracks, or none; automatic translations are "
             "excluded and no video analysis occurs. "
+            "The link expires after the configured cache lifetime (24 hours by default); "
+            "set expires_in_seconds when the user requests another lifetime. "
             "Size, timeout, and live-video restrictions apply; always warn about "
             "potentially large or slow downloads and obtain explicit confirmation before "
             "setting override_duration_limit=true."
@@ -590,6 +605,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 max_fps,
                 dynamic_range,
                 caption_language,
+                expires_in_seconds,
             ),
             context,
             settings.long_operation_timeout_seconds,
@@ -627,13 +643,25 @@ def create_app(settings: Settings | None = None) -> Starlette:
 
     mcp_app = mcp.streamable_http_app()
 
+    async def periodic_cache_cleanup() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                cache.cleanup()
+            except Exception:
+                logger.exception("Cache cleanup failed")
+
     @asynccontextmanager
     async def lifespan(app: Starlette):
         cache.cleanup()
+        cleanup_task = asyncio.create_task(periodic_cache_cleanup())
         try:
             async with mcp.session_manager.run():
                 yield
         finally:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
             model_manager.unload()
 
     application = Starlette(

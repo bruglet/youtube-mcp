@@ -121,6 +121,11 @@ def test_tool_descriptions_guide_youtube_workflows(tmp_path):
     assert "all" in caption_description
     assert "none" in caption_description
     assert "automatic translations" in tools["materialize_video"].description
+    expiry = tools["materialize_video"].inputSchema["properties"]["expires_in_seconds"]
+    assert expiry["default"] is None
+    assert expiry["anyOf"][0]["minimum"] == 1
+    assert "24 hours" in expiry["description"]
+    assert "expires_in_seconds" in tools["materialize_video"].description
 
 
 @pytest.mark.parametrize(
@@ -267,7 +272,7 @@ async def test_materialize_returns_resource_link_and_progress(tmp_path):
         "method": "tools/call",
         "params": {
             "name": "materialize_video",
-            "arguments": {"video": "dQw4w9WgXcQ"},
+            "arguments": {"video": "dQw4w9WgXcQ", "expires_in_seconds": 3600},
             "_meta": {"progressToken": "test"},
         },
     }
@@ -294,4 +299,5 @@ async def test_materialize_returns_resource_link_and_progress(tmp_path):
         None,
         "auto",
         None,
+        3600,
     )

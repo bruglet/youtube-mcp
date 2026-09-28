@@ -31,7 +31,8 @@ class MediaCache:
             path.mkdir(parents=True, exist_ok=True)
 
     def cleanup(self) -> None:
-        cutoff = _utc_now().timestamp() - self.ttl_seconds
+        now = _utc_now()
+        cutoff = now.timestamp() - self.ttl_seconds
         for path in self.work_dir.iterdir():
             if path.stat().st_mtime < cutoff:
                 remove_directory(path) if path.is_dir() else path.unlink(missing_ok=True)
@@ -43,7 +44,17 @@ class MediaCache:
             and (path.suffix != ".json" or path.parent == self.transcript_dir)
         ]
         for path in media_files:
-            if path.stat().st_mtime < cutoff:
+            if path.parent == self.artifact_dir:
+                try:
+                    metadata = ArtifactMetadata.model_validate_json(
+                        path.with_suffix(".json").read_text("utf-8")
+                    )
+                    expired = datetime.fromisoformat(metadata.expires_at) <= now
+                except (ValueError, OSError, TypeError):
+                    expired = True
+            else:
+                expired = path.stat().st_mtime < cutoff
+            if expired:
                 self._remove_media(path)
 
         media_files = [path for path in media_files if path.exists()]
@@ -131,7 +142,15 @@ class ArtifactStore:
         max_fps: int | None = None,
         dynamic_range: str = "auto",
         caption_language: str | list[str] | None = None,
+        expires_in_seconds: int | None = None,
     ) -> ArtifactMetadata:
+        if expires_in_seconds is not None and expires_in_seconds <= 0:
+            raise ValueError("expires_in_seconds must be greater than zero.")
+        ttl_seconds = self._ttl_seconds if expires_in_seconds is None else expires_in_seconds
+        try:
+            _utc_now() + timedelta(seconds=ttl_seconds)
+        except OverflowError as exc:
+            raise ValueError("expires_in_seconds is too large.") from exc
         advanced = max_height > 720 or max_fps is not None or dynamic_range != "auto"
         if isinstance(caption_language, list):
             requested_languages = sorted({code.strip().lower() for code in caption_language})
@@ -143,6 +162,8 @@ class ArtifactStore:
         key = f"video:captions2:{video_id}:{max_height}:lang={selection}"
         if advanced:
             key += f":fps={max_fps}:range={dynamic_range}"
+        if ttl_seconds != self._ttl_seconds:
+            key += f":ttl={ttl_seconds}"
         artifact_id = self._cache.key(key)
         cached = self.resolve(artifact_id)
         if cached:
@@ -200,7 +221,7 @@ class ArtifactStore:
                 dynamic_range=dynamic_range,
                 download_url=f"{self._public_base_url}/artifacts/{artifact_id}",
                 created_at=now.isoformat(),
-                expires_at=(now + timedelta(seconds=self._ttl_seconds)).isoformat(),
+                expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
             )
             self._metadata_path(artifact_id).write_text(
                 metadata.model_dump_json(indent=2), encoding="utf-8"

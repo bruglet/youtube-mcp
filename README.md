@@ -40,6 +40,8 @@ MP4 files contain `mov_text` captions. This conversion does not preserve YouTube
 
 For a normal download, call `materialize_video` with only the video ID or URL. The tool selects an MP4 at 720p or less.
 
+Set `expires_in_seconds` to choose how long the video remains downloadable. If omitted, the server uses `CACHE_TTL_SECONDS` (24 hours by default). The link expires at the recorded time, and the server clears expired files within about a minute. Cache size pressure can remove a file sooner.
+
 Set `max_height` to a height such as `1080` or `2160` for a larger download. You can also set `max_fps` to a frame rate such as `30` or `60`. Set `dynamic_range` to `hdr` or `sdr` to require that range. Downloads above 720p or with frame rate or dynamic range controls use MKV. The server keeps the selected codecs without transcoding.
 
 The height and frame rate values are ceilings. The selected track can have a lower value. Call `get_video_formats` when the user asks which qualities are available or needs a specific combination. This tool returns a compact list and does not download the video.
@@ -106,7 +108,7 @@ The server reads these environment variables at startup:
 | `MODEL_CACHE_DIR` | `/data/models` | Persistent faster-whisper model directory. |
 | `MAX_VIDEO_DURATION_SECONDS` | `3600` | Maximum source duration for downloads and transcription. |
 | `LONG_OPERATION_TIMEOUT_SECONDS` | `7200` | Server timeout for one long tool call. |
-| `CACHE_TTL_SECONDS` | `86400` | Cache lifetime in seconds. |
+| `CACHE_TTL_SECONDS` | `86400` | Default cache lifetime in seconds; `materialize_video` can override it per video. |
 | `CACHE_MAX_BYTES` | `53687091200` | Total media cache size. The default is 50 GiB. |
 | `ARTIFACT_MAX_BYTES` | `8589934592` | Maximum video artifact size. The default is 8 GiB. |
 | `WHISPER_EN_MODEL` | `small.en` | English faster-whisper checkpoint. |

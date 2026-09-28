@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 
@@ -72,6 +72,43 @@ async def test_artifact_survives_store_recreation(tmp_path):
     )
     assert reused.cached is True
     assert datetime.fromisoformat(metadata.expires_at) > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_custom_expiry_is_cached_and_cleanup_uses_artifact_expiry(tmp_path):
+    cache = MediaCache(tmp_path, ttl_seconds=3600, max_bytes=1024)
+    downloader = FakeDownloader()
+    store = ArtifactStore(cache, downloader, "https://mcp.example.com", 3600, 512, 3600)
+    video_id = "dQw4w9WgXcQ"
+    url = f"https://www.youtube.com/watch?v={video_id}"
+
+    default = await store.materialize(video_id, url, 720)
+    custom = await store.materialize(video_id, url, 720, expires_in_seconds=7200)
+    reused = await store.materialize(video_id, url, 720, expires_in_seconds=7200)
+
+    assert default.artifact_id != custom.artifact_id
+    assert reused.cached is True
+    assert downloader.calls == 2
+    assert (
+        datetime.fromisoformat(default.expires_at) - datetime.fromisoformat(default.created_at)
+    ).total_seconds() == 3600
+    assert (
+        datetime.fromisoformat(custom.expires_at) - datetime.fromisoformat(custom.created_at)
+    ).total_seconds() == 7200
+
+    video_path = cache.artifact_dir / f"{custom.artifact_id}.mp4"
+    metadata_path = cache.artifact_dir / f"{custom.artifact_id}.json"
+    os.utime(video_path, (0, 0))
+    cache.cleanup()
+    assert video_path.exists()
+
+    expired = custom.model_copy(
+        update={"expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}
+    )
+    metadata_path.write_text(expired.model_dump_json(), encoding="utf-8")
+    cache.cleanup()
+    assert not video_path.exists()
+    assert not metadata_path.exists()
 
 
 @pytest.mark.asyncio
