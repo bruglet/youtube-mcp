@@ -63,9 +63,12 @@ class YtDlpRunner:
             subtitle_args = [
                 "--extractor-args", "youtube:skip=translated_subs",
                 "--sub-langs", ",".join(f"^{re.escape(track.language_code)}$" for track in caption_tracks),
-                "--sub-format", "vtt",
-                "--embed-subs",
+                "--sub-format", "srv3/vtt" if advanced else "vtt",
             ]
+            if not advanced:
+                subtitle_args.append("--embed-subs")
+            if len(caption_tracks) > 2:
+                subtitle_args.extend(("--sleep-subtitles", "5"))
             if any(track.source == "manual" for track in caption_tracks):
                 subtitle_args.append("--write-subs")
             if any(track.source == "automatic" for track in caption_tracks):
@@ -89,28 +92,75 @@ class YtDlpRunner:
             url,
         )
         path = self._find_output(output_template, f".{container}")
+        if advanced and caption_tracks:
+            await self._embed_styled_subtitles(path, caption_tracks)
         if path.stat().st_size > max_bytes:
             path.unlink(missing_ok=True)
             raise YtDlpError("The downloaded video is larger than the artifact size limit.")
         return path
 
+    async def _embed_styled_subtitles(
+        self, video_path: Path, caption_tracks: list[CaptionOption]
+    ) -> None:
+        inputs: list[Path] = []
+        for track in caption_tracks:
+            stem = f"{video_path.stem}.{track.language_code}"
+            srv3 = video_path.with_name(f"{stem}.srv3")
+            vtt = video_path.with_name(f"{stem}.vtt")
+            ass = video_path.with_name(f"{stem}.ass")
+            if srv3.is_file():
+                await self._run_process(
+                    "YTSubConverter",
+                    "dotnet", "/opt/caption-converter/HeadlessCaptionConverter.dll",
+                    str(srv3),
+                    str(ass),
+                )
+            elif vtt.is_file():
+                await self._run_process(
+                    "ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-i", str(vtt), str(ass),
+                )
+            else:
+                raise YtDlpError(
+                    f"yt-dlp did not download the {track.language_code} caption track."
+                )
+            if not ass.is_file():
+                raise YtDlpError(
+                    f"Could not convert the {track.language_code} caption track to ASS."
+                )
+            inputs.append(ass)
+
+        output = video_path.with_name(f"{video_path.stem}.styled.mkv")
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video_path)]
+        for subtitle in inputs:
+            args.extend(("-i", str(subtitle)))
+        args.extend(("-map", "0:v", "-map", "0:a?"))
+        for index, track in enumerate(caption_tracks):
+            args.extend(("-map", f"{index + 1}:0"))
+            args.extend((f"-metadata:s:s:{index}", f"language={track.language_code.split('-')[0]}"))
+            args.extend((f"-metadata:s:s:{index}", f"title={track.language_code}"))
+        args.extend(("-c", "copy", str(output)))
+        await self._run_process("ffmpeg", *args)
+        output.replace(video_path)
+
     async def _run(self, *arguments: str) -> str:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "--no-color",
-            "--quiet",
-            *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        return await self._run_process("yt-dlp", sys.executable, "-m", "yt_dlp", "--no-color", "--quiet", *arguments)
+
+    async def _run_process(self, label: str, *arguments: str) -> str:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *arguments,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise YtDlpError(f"Could not start {label}: {exc}") from exc
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 stdout, stderr = await process.communicate()
         except TimeoutError as exc:
             await self._stop(process)
-            raise YtDlpError("yt-dlp exceeded the operation timeout.") from exc
+            raise YtDlpError(f"{label} exceeded the operation timeout.") from exc
         except asyncio.CancelledError:
             await self._stop(process)
             raise
@@ -119,7 +169,7 @@ class YtDlpRunner:
             message = stderr.decode("utf-8", errors="replace").strip()
             if len(message) > 2000:
                 message = message[-2000:]
-            raise YtDlpError(f"yt-dlp failed: {message or 'unknown error'}")
+            raise YtDlpError(f"{label} failed: {message or 'unknown error'}")
         return stdout.decode("utf-8", errors="replace")
 
     @staticmethod
@@ -214,8 +264,8 @@ def source_caption_tracks(
     if not candidates:
         return []
     candidates.sort(key=lambda track: (
-        track.language_code.lower() != requested,
-        track.source != "manual",
+        track.source != "manual" if requested == "en" else track.language_code.lower() != requested,
+        track.language_code.lower() != requested if requested == "en" else track.source != "manual",
         track.language_code.lower() != "en-us" if requested == "en" else False,
         track.language_code,
     ))

@@ -377,8 +377,8 @@ def create_app(settings: Settings | None = None) -> Starlette:
             "from one channel; use search_channels first if channel_id is unknown, and "
             "use this tool instead of general web browsing because YouTube often blocks "
             "automated page scraping. Do not substitute search_videos because indexed "
-            "results can be incomplete; does not return private, deleted, "
-            "or otherwise unavailable uploads."
+            "results can be incomplete. Private, deleted, or otherwise unavailable "
+            "uploads are omitted."
         )
         channel_id = channel_id.strip()
         if not channel_id:
@@ -556,14 +556,13 @@ def create_app(settings: Settings | None = None) -> Starlette:
             ),
         ] = "auto",
         caption_language: Annotated[
-            str | None,
+            str | list[str] | None,
             Field(
-                min_length=2,
-                max_length=35,
-                description="Optional caption language code, such as en or zh-Hans, from "
-                "get_video_formats.caption_tracks. Omit to embed every available source "
-                "language, with manual captions preferred over automatic captions. "
-                "If no matching track exists, the video has no embedded captions."
+                description="Omit to embed one English track, preferring manual captions "
+                "over automatic captions. Use a language code such as zh-Hans from "
+                "get_video_formats.caption_tracks, or a list of codes for specific tracks; "
+                "use all for every source track or none to skip captions. Automatic "
+                "translations are excluded, and unavailable languages add no track."
             ),
         ] = None,
     ) -> Annotated[CallToolResult, ArtifactMetadata]:
@@ -573,9 +572,10 @@ def create_app(settings: Settings | None = None) -> Starlette:
             "captions, or transcription. A plain call creates an MP4 up to 720p; higher "
             "resolution or frame rate or dynamic range controls create MKV, and "
             "get_video_formats lists available quality and caption languages. The file "
-            "includes original captions as selectable tracks by default, excluding "
-            "automatic translations; caption_language selects one, and no video analysis "
-            "occurs. Size, timeout, and live-video restrictions apply; always warn about "
+            "includes one English caption track by default; caption_language selects "
+            "specific source tracks, all tracks, or none; automatic translations are "
+            "excluded and no video analysis occurs. "
+            "Size, timeout, and live-video restrictions apply; always warn about "
             "potentially large or slow downloads and obtain explicit confirmation before "
             "setting override_duration_limit=true."
         )

@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +59,11 @@ def test_caption_tracks_exclude_translations_and_prefer_manual():
     ]
     assert source_caption_tracks(info, "fr") == []
 
+    info["subtitles"] = {"en-US": [{"url": "https://example.com/manual-us"}]}
+    assert source_caption_tracks(info, "en") == [
+        CaptionOption(language_code="en-US", source="manual")
+    ]
+
 
 @pytest.mark.asyncio
 async def test_download_video_quality_selector_and_container(tmp_path):
@@ -107,3 +113,53 @@ async def test_download_embeds_selected_caption_tracks_in_one_container(tmp_path
     assert "--embed-subs" in args
     assert "--write-subs" in args
     assert "--write-auto-subs" in args
+    assert "--sleep-subtitles" not in args
+
+    await runner.download_video(
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+        tmp_path / "video.%(ext)s",
+        720,
+        100,
+        caption_tracks=tracks + [CaptionOption(language_code="ja", source="manual")],
+    )
+    args = runner._run.await_args.args
+    assert args[args.index("--sleep-subtitles") + 1] == "5"
+
+
+@pytest.mark.asyncio
+async def test_mkv_converts_srv3_and_vtt_to_ass_before_muxing(tmp_path):
+    runner = YtDlpRunner(30)
+    runner._run = AsyncMock(return_value="")
+    calls = []
+
+    async def fake_process(label, *args):
+        calls.append((label, args))
+        if label == "YTSubConverter":
+            Path(args[3]).write_text("converted ASS")
+        elif label == "ffmpeg":
+            Path(args[-1]).write_bytes(b"muxed video" if args[-1].endswith(".mkv") else b"ASS")
+        return ""
+
+    runner._run_process = fake_process
+    (tmp_path / "video.mkv").write_bytes(b"video")
+    (tmp_path / "video.en.srv3").write_text("styled captions")
+    (tmp_path / "video.es.vtt").write_text("plain captions")
+    tracks = [
+        CaptionOption(language_code="en", source="manual"),
+        CaptionOption(language_code="es", source="automatic"),
+    ]
+
+    path = await runner.download_video(
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+        tmp_path / "video.%(ext)s", 1080, 100,
+        caption_tracks=tracks,
+    )
+
+    args = runner._run.await_args.args
+    assert args[args.index("--sub-format") + 1] == "srv3/vtt"
+    assert "--embed-subs" not in args
+    assert calls[0][0] == "YTSubConverter"
+    assert calls[0][1][:2] == ("dotnet", "/opt/caption-converter/HeadlessCaptionConverter.dll")
+    assert calls[1][0] == "ffmpeg" and calls[1][1][-1].endswith(".ass")
+    assert calls[2][0] == "ffmpeg" and "-map" in calls[2][1]
+    assert path.read_bytes() == b"muxed video"

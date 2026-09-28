@@ -130,11 +130,17 @@ class ArtifactStore:
         override_duration_limit: bool = False,
         max_fps: int | None = None,
         dynamic_range: str = "auto",
-        caption_language: str | None = None,
+        caption_language: str | list[str] | None = None,
     ) -> ArtifactMetadata:
         advanced = max_height > 720 or max_fps is not None or dynamic_range != "auto"
-        caption_language = caption_language.strip().lower() if caption_language else None
-        key = f"video:captions1:{video_id}:{max_height}:lang={caption_language or 'all'}"
+        if isinstance(caption_language, list):
+            requested_languages = sorted({code.strip().lower() for code in caption_language})
+            if any(not code or code in {"all", "none"} for code in requested_languages):
+                raise ValueError("Caption language lists must contain language codes only.")
+            selection = f"list:{','.join(requested_languages)}" if requested_languages else "none"
+        else:
+            selection = caption_language.strip().lower() if caption_language else "default-en"
+        key = f"video:captions2:{video_id}:{max_height}:lang={selection}"
         if advanced:
             key += f":fps={max_fps}:range={dynamic_range}"
         artifact_id = self._cache.key(key)
@@ -150,7 +156,20 @@ class ArtifactStore:
             raise ValueError("The video is longer than the configured duration limit.")
         if info.get("is_live"):
             raise ValueError("Live video materialization is not supported.")
-        caption_tracks = source_caption_tracks(info, caption_language)
+        if selection == "none":
+            caption_tracks = []
+        elif selection == "all":
+            caption_tracks = source_caption_tracks(info)
+        elif isinstance(caption_language, list):
+            caption_tracks = list({
+                track.language_code: track
+                for code in requested_languages
+                for track in source_caption_tracks(info, code)
+            }.values())
+        else:
+            caption_tracks = source_caption_tracks(
+                info, "en" if selection == "default-en" else selection
+            )
 
         work_dir = self._cache.make_work_dir()
         try:

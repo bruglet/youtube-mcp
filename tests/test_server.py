@@ -116,6 +116,10 @@ def test_tool_descriptions_guide_youtube_workflows(tmp_path):
     assert tools["materialize_video"].inputSchema["properties"]["max_height"]["default"] == 720
     assert tools["materialize_video"].inputSchema["properties"]["dynamic_range"]["default"] == "auto"
     assert "get_video_formats.caption_tracks" in tools["materialize_video"].inputSchema["properties"]["caption_language"]["description"]
+    caption_description = tools["materialize_video"].inputSchema["properties"]["caption_language"]["description"]
+    assert "English" in caption_description
+    assert "all" in caption_description
+    assert "none" in caption_description
     assert "automatic translations" in tools["materialize_video"].description
 
 

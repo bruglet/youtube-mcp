@@ -126,7 +126,7 @@ async def test_custom_quality_has_separate_cached_mkv(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_materialization_embeds_source_captions_and_caches_language_choice(tmp_path):
+async def test_materialization_selects_captions_and_caches_language_choice(tmp_path):
     downloader = FakeDownloader()
     downloader.subtitles = {"en": [{"url": "https://example.com/manual"}]}
     downloader.automatic_captions = {
@@ -139,6 +139,10 @@ async def test_materialization_embeds_source_captions_and_caches_language_choice
 
     default = await store.materialize("dQw4w9WgXcQ", url, 720)
     assert [(track.language_code, track.source) for track in downloader.caption_tracks] == [
+        ("en", "manual")
+    ]
+    all_tracks = await store.materialize("dQw4w9WgXcQ", url, 720, caption_language="all")
+    assert [(track.language_code, track.source) for track in downloader.caption_tracks] == [
         ("en", "manual"), ("es", "automatic")
     ]
     spanish = await store.materialize("dQw4w9WgXcQ", url, 720, caption_language="es")
@@ -146,8 +150,15 @@ async def test_materialization_embeds_source_captions_and_caches_language_choice
         ("es", "automatic")
     ]
     assert spanish.artifact_id != default.artifact_id
+    assert all_tracks.artifact_id != default.artifact_id
     assert (await store.materialize("dQw4w9WgXcQ", url, 720, caption_language="es")).cached
-    assert downloader.calls == 2
+    none = await store.materialize("dQw4w9WgXcQ", url, 720, caption_language="none")
+    assert downloader.caption_tracks == []
+    assert none.artifact_id != default.artifact_id
+    both = await store.materialize("dQw4w9WgXcQ", url, 720, caption_language=["es", "en"])
+    assert [track.language_code for track in downloader.caption_tracks] == ["en", "es"]
+    assert both.artifact_id != default.artifact_id
+    assert downloader.calls == 5
 
 
 def test_transcription_result_survives_cache_recreation(tmp_path):

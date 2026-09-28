@@ -32,9 +32,11 @@ Playlist and comment responses use `next_page_token` for pagination.
 
 `materialize_video` creates a user download. It does not send the video to Whisper or ask the client to analyze it.
 
-The download is one file. The server embeds available creator captions and original automatic captions as selectable tracks. It does not add YouTube's automatic translations. When a manual and an automatic track have the same language code, it selects the manual track.
+The download is one file. By default, the server adds one English caption track, preferring manual captions over automatic captions. If no English track exists, it adds no captions. It does not add YouTube's automatic translations.
 
-Set `caption_language` to one code from `get_video_formats.caption_tracks` to embed one language. If no track matches, the video has no captions. Leave this option unset to embed all source languages. Captions are not burned into the picture.
+Set `caption_language` to one code from `get_video_formats.caption_tracks` for a specific language. You can also pass a list of codes for selected tracks, `all` for every source track, or `none` for no captions. The server skips unavailable languages. It downloads tracks one at a time and waits five seconds between subtitle requests when more than two tracks are selected. Even with this delay, YouTube may rate-limit large requests.
+
+MP4 files contain `mov_text` captions. This conversion does not preserve YouTube's rich caption styling. MKV files use SRV3 captions converted to ASS with YTSubConverter's visual mode, which better preserves styling such as position, color, and highlighting. If a track has no SRV3 format, the server converts VTT to plain ASS. Captions are selectable tracks, not burned into the video picture.
 
 For a normal download, call `materialize_video` with only the video ID or URL. The tool selects an MP4 at 720p or less.
 
@@ -48,7 +50,7 @@ At the same quality, yt-dlp prefers AV1, VP9, HEVC, then H.264 for video. It pre
 
 - Python 3.11 or later for local development.
 - Optional: a YouTube Data API v3 key for metadata and search.
-- FFmpeg for local video materialization.
+- FFmpeg for local video materialization. Styled captions in MKV also require the headless converter, .NET 10, and Pango. The container image includes them.
 - An amd64 processor with AVX2 for the supplied container image.
 - Cloudflare Tunnel and Cloudflare Access for production use.
 
