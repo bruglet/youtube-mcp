@@ -1,7 +1,9 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Xml.Linq;
 using YTSubConverter.Shared;
 using YTSubConverter.Shared.Formats;
+using YTSubConverter.Shared.Util;
 
 if (args.Length != 2)
 {
@@ -13,6 +15,24 @@ try
 {
     using var measurer = new PangoTextMeasurer();
     var source = SubtitleDocument.Load(args[0]);
+    var paragraphs = XDocument.Load(args[0]).Descendants("p").ToList();
+    if (paragraphs.Count == source.Lines.Count && paragraphs.All(p => p.Attribute("w") != null && (string?)p.Attribute("a") != "1"))
+    {
+        // Visual conversion rounds karaoke starts to frame centers. Use the same
+        // boundary for the preceding cue's end to avoid a transition overlap.
+        var previous = new Dictionary<string, Line>();
+        for (int index = 0; index < paragraphs.Count; index++)
+        {
+            var line = source.Lines[index];
+            string window = paragraphs[index].Attribute("w")!.Value;
+            bool emulatedKaraoke = line.Sections.Any(s => s.StartOffset > TimeSpan.Zero) &&
+                line.Sections.Any(s => s.BackColor.A > 0 || s.ShadowColors.Count > 0);
+            var start = emulatedKaraoke ? TimeUtil.RoundTimeToFrameCenter(line.Start) : line.Start;
+            if (previous.TryGetValue(window, out var prior) && prior.End > start)
+                prior.End = start;
+            previous[window] = line;
+        }
+    }
     SubtitleDocument.Convert(source, ".ass", true, measurer).Save(args[1]);
     return 0;
 }

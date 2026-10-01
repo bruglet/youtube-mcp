@@ -142,7 +142,9 @@ async def test_mkv_converts_srv3_and_vtt_to_ass_before_muxing(tmp_path):
 
     runner._run_process = fake_process
     (tmp_path / "video.mkv").write_bytes(b"video")
-    (tmp_path / "video.en.srv3").write_text("styled captions")
+    (tmp_path / "video.en.srv3").write_text(
+        '<timedtext format="3"><head/><body><p t="0" d="1000">captions</p></body></timedtext>'
+    )
     (tmp_path / "video.es.vtt").write_text("plain captions")
     tracks = [
         CaptionOption(language_code="en", source="manual"),

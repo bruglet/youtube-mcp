@@ -162,6 +162,8 @@ class ArtifactStore:
         key = f"video:captions2:{video_id}:{max_height}:lang={selection}"
         if advanced:
             key += f":fps={max_fps}:range={dynamic_range}"
+            if selection != "none":
+                key += ":srv3-windows1"
         if ttl_seconds != self._ttl_seconds:
             key += f":ttl={ttl_seconds}"
         artifact_id = self._cache.key(key)

@@ -7,6 +7,7 @@ import sys
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .captions import normalize_srv3_windows
 from .models import CaptionOption, VideoFormatOption, VideoFormatsResult
 
 
@@ -109,6 +110,7 @@ class YtDlpRunner:
             vtt = video_path.with_name(f"{stem}.vtt")
             ass = video_path.with_name(f"{stem}.ass")
             if srv3.is_file():
+                normalize_srv3_windows(srv3)
                 await self._run_process(
                     "YTSubConverter",
                     "dotnet", "/opt/caption-converter/HeadlessCaptionConverter.dll",
